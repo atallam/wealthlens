@@ -82,17 +82,66 @@ function sanitizeDates(obj) {
 
 // ── HOLDINGS ─────────────────────────────────────────────────────
 app.get("/api/holdings", auth, async (req, res) => {
-  const { data, error } = await supabase
+  // Try with transactions join first, fall back to without if it fails
+  let { data, error } = await supabase
     .from("holdings")
-    .select("*, artifacts(id,file_name,file_type,file_size,description,uploaded_at)")
+    .select("*, artifacts(id,file_name,file_type,file_size,description,uploaded_at), transactions(id,txn_type,units,price,txn_date,notes,created_at)")
     .order("created_at", { ascending: true });
+
+  // If join fails (e.g. transactions table not yet migrated), retry without it
+  if (error) {
+    console.warn("Holdings with transactions failed, retrying without:", error.message);
+    ({ data, error } = await supabase
+      .from("holdings")
+      .select("*, artifacts(id,file_name,file_type,file_size,description,uploaded_at)")
+      .order("created_at", { ascending: true }));
+  }
+
   if (error) return res.status(500).json({ error: error.message });
-  res.json(data || []);
+
+  // Compute net_units and avg_cost from transactions for each holding
+  const enriched = (data || []).map(h => {
+    const txns = h.transactions || [];
+    if (txns.length === 0) return h;
+    const buys  = txns.filter(t => t.txn_type === "BUY");
+    const sells = txns.filter(t => t.txn_type === "SELL");
+    const buyUnits  = buys.reduce((s, t) => s + Number(t.units), 0);
+    const sellUnits = sells.reduce((s, t) => s + Number(t.units), 0);
+    const netUnits  = buyUnits - sellUnits;
+    const avgCost   = buyUnits > 0
+      ? buys.reduce((s, t) => s + Number(t.units) * Number(t.price), 0) / buyUnits
+      : 0;
+    return {
+      ...h,
+      net_units: netUnits,
+      avg_cost:  avgCost,
+      units:          netUnits,
+      purchase_price: avgCost,
+      purchase_nav:   avgCost,
+      purchase_value: avgCost * netUnits,
+      start_date: h.start_date || txns.sort((a,b) => new Date(a.txn_date)-new Date(b.txn_date))[0]?.txn_date || null,
+    };
+  });
+  res.json(enriched);
 });
 
 app.post("/api/holdings", auth, async (req, res) => {
-  const { error } = await supabase.from("holdings").insert(sanitizeDates(req.body));
+  const { first_transaction, ...holdingData } = req.body;
+  const { error } = await supabase.from("holdings").insert(sanitizeDates(holdingData));
   if (error) return res.status(500).json({ error: error.message });
+
+  // If a first transaction was provided, insert it too
+  if (first_transaction && first_transaction.units && first_transaction.price) {
+    await supabase.from("transactions").insert({
+      id:         "t_" + Date.now() + Math.random().toString(36).slice(2,6),
+      holding_id: holdingData.id,
+      txn_type:   first_transaction.txn_type || "BUY",
+      units:      Number(first_transaction.units),
+      price:      Number(first_transaction.price),
+      txn_date:   first_transaction.txn_date || holdingData.start_date || new Date().toISOString().slice(0,10),
+      notes:      first_transaction.notes || "",
+    });
+  }
   res.json({ ok: true });
 });
 
@@ -104,6 +153,32 @@ app.put("/api/holdings/:id", auth, async (req, res) => {
 
 app.delete("/api/holdings/:id", auth, async (req, res) => {
   const { error } = await supabase.from("holdings").delete().eq("id", req.params.id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true });
+});
+
+// ── TRANSACTIONS ──────────────────────────────────────────────────
+app.get("/api/transactions/:holdingId", auth, async (req, res) => {
+  const { data, error } = await supabase
+    .from("transactions")
+    .select("*")
+    .eq("holding_id", req.params.holdingId)
+    .order("txn_date", { ascending: true });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data || []);
+});
+
+app.post("/api/transactions", auth, async (req, res) => {
+  const { error } = await supabase.from("transactions").insert({
+    id: "t_" + Date.now() + Math.random().toString(36).slice(2,6),
+    ...req.body,
+  });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true });
+});
+
+app.delete("/api/transactions/:id", auth, async (req, res) => {
+  const { error } = await supabase.from("transactions").delete().eq("id", req.params.id);
   if (error) return res.status(500).json({ error: error.message });
   res.json({ ok: true });
 });
