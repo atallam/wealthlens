@@ -68,6 +68,18 @@ app.post("/api/portfolio", auth, async (req, res) => {
   res.json({ ok: true });
 });
 
+// ── Date sanitizer — convert empty strings to null ───────────────
+function sanitizeDates(obj) {
+  const dateFields = ["start_date", "maturity_date"];
+  const result = { ...obj };
+  for (const field of dateFields) {
+    if (result[field] === "" || result[field] === undefined) {
+      result[field] = null;
+    }
+  }
+  return result;
+}
+
 // ── HOLDINGS ─────────────────────────────────────────────────────
 app.get("/api/holdings", auth, async (req, res) => {
   const { data, error } = await supabase
@@ -79,13 +91,13 @@ app.get("/api/holdings", auth, async (req, res) => {
 });
 
 app.post("/api/holdings", auth, async (req, res) => {
-  const { error } = await supabase.from("holdings").insert(req.body);
+  const { error } = await supabase.from("holdings").insert(sanitizeDates(req.body));
   if (error) return res.status(500).json({ error: error.message });
   res.json({ ok: true });
 });
 
 app.put("/api/holdings/:id", auth, async (req, res) => {
-  const { error } = await supabase.from("holdings").update(req.body).eq("id", req.params.id);
+  const { error } = await supabase.from("holdings").update(sanitizeDates(req.body)).eq("id", req.params.id);
   if (error) return res.status(500).json({ error: error.message });
   res.json({ ok: true });
 });
