@@ -719,7 +719,7 @@ ${portfolioCtx}`,
             <div style={{overflowX:"auto"}}>
               <table className="ht">
                 <thead><tr>
-                  <th>Asset</th><th>Type</th><th>Member</th>
+                  <th>Asset</th><th>Ticker / Code</th><th>Type</th><th>Member</th>
                   <th className="r">Invested</th><th className="r">Current</th>
                   <th className="r">Gain</th><th className="r">Return</th><th className="r">XIRR</th>
                   <th className="r">Price source</th><th/>
@@ -735,7 +735,15 @@ ${portfolioCtx}`,
                       <tr key={h.id}>
                         <td>
                           <div className="hn">{h.name}</div>
-                          <div className="hm">{mn}{h.ticker?` · ${h.ticker}`:""}{h.scheme_code?` · SC:${h.scheme_code}`:""}</div>
+                          <div className="hm">{mn}</div>
+                        </td>
+                        <td>
+                          {(h.ticker||h.scheme_code)
+                            ? <span style={{fontFamily:"'DM Mono',monospace",fontSize:".73rem",color:"#c9a84c",background:"rgba(201,168,76,.08)",padding:"2px 7px",borderRadius:3,border:"1px solid rgba(201,168,76,.2)"}}>
+                                {h.ticker||`SC:${h.scheme_code}`}
+                              </span>
+                            : <span style={{fontSize:".7rem",color:"rgba(232,224,208,.2)"}}>—</span>
+                          }
                         </td>
                         <td><span className="tbadge2" style={{background:a.color+"22",color:a.color}}>{a.icon} {a.label}</span></td>
                         <td className="dim">{mn}</td>
