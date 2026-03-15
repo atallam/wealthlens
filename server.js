@@ -8,6 +8,15 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app  = express();
 const PORT = process.env.PORT || 3000;
 
+// ── Fail fast if required env vars are missing ───────────────────
+const required = ["SUPABASE_URL", "SUPABASE_SERVICE_KEY"];
+const missing  = required.filter(k => !process.env[k]);
+if (missing.length) {
+  console.error(`❌  Missing required environment variables: ${missing.join(", ")}`);
+  console.error("    Add them in Render → Environment panel.");
+  process.exit(1);
+}
+
 // ── Supabase admin client (service key — full DB access) ─────────
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -202,7 +211,7 @@ app.delete("/api/artifacts/:id", auth, async (req, res) => {
 // ── Serve React app for all other routes ─────────────────────────
 app.get("*", (_, res) => res.sendFile(path.join(__dirname, "dist", "index.html")));
 
-app.listen(PORT, () => {
+app.listen(PORT, "0.0.0.0", () => {
   console.log(`✅  WealthLens Pro running on port ${PORT}`);
   console.log(`📊  Real-time price fetching: Yahoo Finance + MFAPI`);
   console.log(`🔐  Google Auth via Supabase`);
