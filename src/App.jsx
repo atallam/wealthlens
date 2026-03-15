@@ -49,7 +49,10 @@ const uid=()=>"x"+Date.now()+Math.random().toString(36).slice(2,6);
 const ago=d=>{if(!d)return"Never";const s=Math.floor((Date.now()-new Date(d))/1000);if(s<60)return`${s}s ago`;if(s<3600)return`${Math.floor(s/60)}m ago`;if(s<86400)return`${Math.floor(s/3600)}h ago`;return`${Math.floor(s/86400)}d ago`;};
 const fmtSize=b=>b>1e6?`${(b/1e6).toFixed(1)}MB`:b>1e3?`${(b/1e3).toFixed(0)}KB`:`${b}B`;
 
-const BF={member_id:"",type:"IN_STOCK",name:"",ticker:"",scheme_code:"",units:"",purchase_price:"",current_price:"",purchase_nav:"",current_nav:"",principal:"",interest_rate:"",start_date:"",maturity_date:"",purchase_value:"",current_value:"",usd_inr_rate:"83.2"};
+// Holding form — instrument details only, no transaction data
+const BF={member_id:"",type:"IN_STOCK",name:"",ticker:"",scheme_code:"",interest_rate:"",start_date:"",maturity_date:"",purchase_value:"",current_value:"",principal:"",usd_inr_rate:"83.2"};
+// Transaction form
+const BT={holding_id:"",txn_type:"BUY",units:"",price:"",txn_date:new Date().toISOString().slice(0,10),notes:""};
 const BG={name:"",targetAmount:"",targetDate:"",linkedMember:"all",category:"Retirement",color:"#c9a84c",notes:""};
 const BA={type:"ALLOCATION_DRIFT",assetType:"IN_STOCK",threshold:"",label:"",active:true};
 
@@ -88,6 +91,102 @@ function LoginScreen({ error }) {
           {loading?"Redirecting…":"Sign in with Google"}
         </button>
         <div style={{marginTop:"1.5rem",fontSize:".68rem",color:"rgba(232,224,208,.2)"}}>Access restricted to authorised family members</div>
+      </div>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════
+   TRANSACTION PANEL (per holding)
+══════════════════════════════════════════════ */
+function TransactionPanel({ holding, onAddTxn, onDeleteTxn, txnForm, setTxnForm, onClose }) {
+  const txns = (holding.transactions || []).slice().sort((a,b)=>new Date(a.txn_date)-new Date(b.txn_date));
+  const buys  = txns.filter(t=>t.txn_type==="BUY");
+  const sells = txns.filter(t=>t.txn_type==="SELL");
+  const netUnits = buys.reduce((s,t)=>s+Number(t.units),0) - sells.reduce((s,t)=>s+Number(t.units),0);
+  const avgCost  = buys.length>0 ? buys.reduce((s,t)=>s+Number(t.units)*Number(t.price),0)/buys.reduce((s,t)=>s+Number(t.units),0) : 0;
+  const priceLabel = holding.type==="MF"?"NAV":"Price";
+
+  return (
+    <div className="ovl" onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div className="mod" style={{maxWidth:600}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"1.2rem"}}>
+          <div>
+            <div className="modtitle" style={{marginBottom:".15rem"}}>📋 Transactions</div>
+            <div style={{fontSize:".73rem",color:"rgba(232,224,208,.38)"}}>{holding.name}</div>
+          </div>
+          <button className="delbtn" style={{fontSize:"1rem"}} onClick={onClose}>✕</button>
+        </div>
+
+        {/* Summary bar */}
+        {txns.length>0&&(
+          <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:".6rem",marginBottom:"1.2rem"}}>
+            {[
+              {label:"Net Units", val:netUnits.toFixed(4)},
+              {label:`Avg Cost`, val:`₹${avgCost.toLocaleString("en-IN",{maximumFractionDigits:2})}`},
+              {label:"Transactions", val:txns.length},
+            ].map(s=>(
+              <div key={s.label} style={{background:"rgba(255,255,255,.03)",border:"1px solid rgba(255,255,255,.07)",borderRadius:8,padding:".7rem .9rem",textAlign:"center"}}>
+                <div style={{fontSize:".62rem",letterSpacing:".08em",textTransform:"uppercase",color:"rgba(232,224,208,.35)",marginBottom:".3rem"}}>{s.label}</div>
+                <div style={{fontFamily:"'DM Mono',monospace",fontSize:".95rem",color:"#c9a84c"}}>{s.val}</div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Transaction list */}
+        {txns.length===0
+          ? <div className="empty" style={{padding:"1.5rem"}}>No transactions yet — add one below</div>
+          : <div style={{maxHeight:240,overflowY:"auto",marginBottom:"1.2rem"}}>
+              <table className="ht" style={{fontSize:".75rem"}}>
+                <thead><tr>
+                  <th>Date</th><th>Type</th><th className="r">Units</th>
+                  <th className="r">{priceLabel}</th><th className="r">Value</th>
+                  <th>Notes</th><th/>
+                </tr></thead>
+                <tbody>
+                  {txns.map(t=>(
+                    <tr key={t.id}>
+                      <td className="mono dim">{t.txn_date}</td>
+                      <td>
+                        <span style={{fontSize:".65rem",padding:"2px 7px",borderRadius:3,fontWeight:600,
+                          background:t.txn_type==="BUY"?"rgba(76,175,154,.15)":"rgba(224,124,90,.15)",
+                          color:t.txn_type==="BUY"?"#4caf9a":"#e07c5a"}}>
+                          {t.txn_type}
+                        </span>
+                      </td>
+                      <td className="r mono">{Number(t.units).toFixed(4)}</td>
+                      <td className="r mono dim">₹{Number(t.price).toLocaleString("en-IN",{maximumFractionDigits:2})}</td>
+                      <td className="r mono" style={{color:"#e8e0d0"}}>₹{(Number(t.units)*Number(t.price)).toLocaleString("en-IN",{maximumFractionDigits:0})}</td>
+                      <td className="dim" style={{maxWidth:120,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.notes||"—"}</td>
+                      <td><button className="delbtn" onClick={()=>onDeleteTxn(t.id, holding.id)}>✕</button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+        }
+
+        {/* Add transaction form */}
+        <div style={{background:"rgba(255,255,255,.02)",border:"1px solid rgba(255,255,255,.07)",borderRadius:9,padding:"1rem"}}>
+          <div style={{fontSize:".68rem",letterSpacing:".1em",textTransform:"uppercase",color:"rgba(232,224,208,.35)",marginBottom:".8rem"}}>Add Transaction</div>
+          <div className="frow">
+            <FG label="Type">
+              <select className="fi fs" value={txnForm.txn_type} onChange={e=>setTxnForm(p=>({...p,txn_type:e.target.value}))}>
+                <option value="BUY">BUY</option>
+                <option value="SELL">SELL</option>
+              </select>
+            </FG>
+            <FG label="Units"><input type="number" className="fi" placeholder="e.g. 100" value={txnForm.units} onChange={e=>setTxnForm(p=>({...p,units:e.target.value}))}/></FG>
+            <FG label={`${priceLabel} ₹`}><input type="number" className="fi" placeholder="per unit" value={txnForm.price} onChange={e=>setTxnForm(p=>({...p,price:e.target.value}))}/></FG>
+            <FG label="Date"><input type="date" className="fi" value={txnForm.txn_date} onChange={e=>setTxnForm(p=>({...p,txn_date:e.target.value}))}/></FG>
+          </div>
+          <FG label="Notes (optional)"><input className="fi" placeholder="e.g. SIP, bonus units, tax harvesting" value={txnForm.notes} onChange={e=>setTxnForm(p=>({...p,notes:e.target.value}))}/></FG>
+          <MA>
+            <button className="btnc" onClick={onClose}>Close</button>
+            <button className="btns" onClick={()=>onAddTxn()} disabled={!txnForm.units||!txnForm.price||!txnForm.txn_date}>+ Add Transaction</button>
+          </MA>
+        </div>
       </div>
     </div>
   );
@@ -219,6 +318,13 @@ export default function App() {
   const [csvPreview,     setCsvPreview]     = useState([]);
   const [pdfState,       setPdfState]       = useState({loading:false,summary:""});
   const [artifactHolding,setArtifactHolding]= useState(null);
+  const [txnHolding,     setTxnHolding]     = useState(null);
+  const [txnForm,        setTxnForm]        = useState(BT);
+  const [globalTxnModal, setGlobalTxnModal] = useState(false);
+  const [aiMessages,     setAiMessages]     = useState([]); // {role, content, ts}
+  const [aiInput,        setAiInput]        = useState("");
+  const [aiLoading,      setAiLoading]      = useState(false);
+  const aiBottomRef = useRef();
 
   const csvRef   = useRef();
   const saveTimer = useRef(null);
@@ -297,24 +403,54 @@ export default function App() {
 
   // ── CRUD ──
   async function saveHolding(){
-    const h={...form,
+    const h={
+      ...form,
       id: editHolding?.id||uid(),
-      units:+form.units||null, purchase_price:+form.purchase_price||null,
-      current_price:+form.current_price||null, purchase_nav:+form.purchase_nav||null,
-      current_nav:+form.current_nav||null, principal:+form.principal||null,
-      interest_rate:+form.interest_rate||null, purchase_value:+form.purchase_value||null,
-      current_value:+form.current_value||null, usd_inr_rate:+form.usd_inr_rate||83.2,
+      principal:      +form.principal||null,
+      interest_rate:  +form.interest_rate||null,
+      purchase_value: +form.purchase_value||null,
+      current_value:  +form.current_value||null,
+      usd_inr_rate:   +form.usd_inr_rate||83.2,
     };
     try{
       if(editHolding){
         await api(`/api/holdings/${h.id}`,{method:"PUT",body:JSON.stringify(h)});
-        setHoldings(p=>p.map(x=>x.id===h.id?{...x,...h}:x));
       } else {
         await api("/api/holdings",{method:"POST",body:JSON.stringify(h)});
-        setHoldings(p=>[...p,h]);
       }
+      const hlds = await api("/api/holdings");
+      setHoldings(hlds||[]);
       setModal(null); setForm(BF); setEditHolding(null);
+      // For stock/MF holdings — auto-open Add Transaction so user records first buy immediately
+      if(!editHolding && ["IN_STOCK","US_STOCK","MF"].includes(h.type)){
+        const newH = hlds.find(x=>x.id===h.id);
+        if(newH){ setTxnForm({...BT,holding_id:newH.id}); setGlobalTxnModal(true); }
+      }
     }catch(e){ alert("Save failed: "+e.message); }
+  }
+
+  async function addTransaction(){
+    if(!txnForm.holding_id){ alert("Select a holding"); return; }
+    if(!txnForm.units||!txnForm.price||!txnForm.txn_date){ alert("Fill in units, price, and date"); return; }
+    try{
+      await api("/api/transactions",{method:"POST",body:JSON.stringify({
+        ...txnForm, units:+txnForm.units, price:+txnForm.price
+      })});
+      const hlds = await api("/api/holdings");
+      setHoldings(hlds||[]);
+      // If open from the inline panel, refresh that holding too
+      if(txnHolding) setTxnHolding(hlds.find(h=>h.id===txnHolding.id)||null);
+      setTxnForm(BT);
+      setGlobalTxnModal(false);
+    }catch(e){ alert("Failed: "+e.message); }
+  }
+
+  async function deleteTransaction(txnId, holdingId){
+    if(!confirm("Delete this transaction?"))return;
+    await api(`/api/transactions/${txnId}`,{method:"DELETE"});
+    const hlds = await api("/api/holdings");
+    setHoldings(hlds||[]);
+    if(txnHolding) setTxnHolding(hlds.find(h=>h.id===holdingId)||null);
   }
 
   async function deleteHolding(id){
@@ -329,6 +465,106 @@ export default function App() {
   function addMember(){if(!newMember.name)return;setMembers(p=>[...p,{id:uid(),...newMember}]);setNewMember({name:"",relation:""});setModal(null);}
   function addGoal(){setGoals(p=>[...p,{id:uid(),...goalForm,targetAmount:+goalForm.targetAmount}]);setGoalForm(BG);setModal(null);}
   function addAlert(){setAlerts(p=>[...p,{id:uid(),...alertForm,threshold:+alertForm.threshold}]);setAlertForm(BA);setModal(null);}
+
+  // ── Build rich portfolio context for AI ──────────────────────────
+  function buildPortfolioContext(){
+    const allCurCtx  = holdings.reduce((s,h)=>s+getVal(h),0);
+    const allInvCtx  = holdings.reduce((s,h)=>s+getInv(h),0);
+    const allGainCtx = allCurCtx - allInvCtx;
+    const allPctCtx  = allInvCtx>0 ? (allGainCtx/allInvCtx)*100 : 0;
+
+    const memberLines = members.map(m=>{
+      const hs = holdings.filter(h=>h.member_id===m.id);
+      const cur = hs.reduce((s,h)=>s+getVal(h),0);
+      const inv = hs.reduce((s,h)=>s+getInv(h),0);
+      return `  ${m.name} (${m.relation}): current=${fmtCr(cur)}, invested=${fmtCr(inv)}, return=${inv>0?((cur-inv)/inv*100).toFixed(1):0}%`;
+    }).join("\n");
+
+    const holdingLines = holdings.map(h=>{
+      const cur=getVal(h), inv=getInv(h), g=cur-inv;
+      const xr=getXIRR(h);
+      const mn=members.find(m=>m.id===h.member_id)?.name||"";
+      const txns=h.transactions||[];
+      const txnSummary = txns.length>0
+        ? `  transactions(${txns.length}): buys=${txns.filter(t=>t.txn_type==="BUY").length}, sells=${txns.filter(t=>t.txn_type==="SELL").length}, net_units=${h.net_units?.toFixed(4)||"?"}, avg_cost=₹${h.avg_cost?.toFixed(2)||"?"}`
+        : "";
+      return `  [${AT[h.type]?.label}] ${h.name} (${mn}): current=${fmtCr(cur)}, invested=${fmtCr(inv)}, gain=${g>=0?"+":""}${fmtCr(g)}, return=${inv>0?(g/inv*100).toFixed(1):0}%${xr!=null?`, xirr=${xr.toFixed(1)}%`:""}${h.ticker?`, ticker=${h.ticker}`:""}${h.scheme_code?`, scheme=${h.scheme_code}`:""}${txnSummary}`;
+    }).join("\n");
+
+    const allocationLines = Object.entries(AT).map(([t,a])=>{
+      const val=holdings.filter(h=>h.type===t).reduce((s,h)=>s+getVal(h),0);
+      if(val===0) return null;
+      return `  ${a.label}: ${fmtCr(val)} (${allCurCtx>0?(val/allCurCtx*100).toFixed(1):0}%)`;
+    }).filter(Boolean).join("\n");
+
+    const goalLines = goals.map(g=>{
+      const prog=Math.min((allCurCtx/g.targetAmount)*100,100);
+      const yLeft=((Math.max(0,new Date(g.targetDate)-new Date()))/(864e5*365.25)).toFixed(1);
+      return `  ${g.name}: target=${fmtCr(g.targetAmount)}, by ${g.targetDate}, funded=${prog.toFixed(0)}%, years_left=${yLeft}`;
+    }).join("\n");
+
+    const alertLines = trigAlerts.map(a=>`  ⚠ ${a.label}`).join("\n");
+
+    return `WEALTHLENS FAMILY PORTFOLIO — ${new Date().toLocaleDateString("en-IN")}
+
+SUMMARY:
+  Total value: ${fmtCr(allCurCtx)}
+  Total invested: ${fmtCr(allInvCtx)}
+  Total gain: ${allGainCtx>=0?"+":""}${fmtCr(allGainCtx)} (${allPctCtx.toFixed(2)}%)
+  Holdings count: ${holdings.length}
+
+MEMBERS:
+${memberLines}
+
+ASSET ALLOCATION:
+${allocationLines}
+
+HOLDINGS (all):
+${holdingLines}
+
+FINANCIAL GOALS:
+${goalLines||"  None set"}
+
+TRIGGERED ALERTS:
+${alertLines||"  None"}`;
+  }
+
+  // ── Ask AI ────────────────────────────────────────────────────────
+  async function askAI(){
+    const q = aiInput.trim();
+    if(!q || aiLoading) return;
+    setAiInput("");
+    const userMsg = {role:"user", content:q, ts:new Date()};
+    setAiMessages(p=>[...p, userMsg]);
+    setAiLoading(true);
+    setTimeout(()=>aiBottomRef.current?.scrollIntoView({behavior:"smooth"}),50);
+
+    const portfolioCtx = buildPortfolioContext();
+    // Build conversation history for multi-turn context
+    const history = [...aiMessages, userMsg].map(m=>({role:m.role, content:m.content}));
+
+    try{
+      const res = await fetch("https://api.anthropic.com/v1/messages",{
+        method:"POST",
+        headers:{"Content-Type":"application/json","x-api-key":import.meta.env.VITE_ANTHROPIC_KEY||"","anthropic-version":"2023-06-01"},
+        body:JSON.stringify({
+          model:"claude-sonnet-4-20250514",
+          max_tokens:1000,
+          system:`You are a private wealth advisor assistant for an Indian family portfolio management app called WealthLens. You have access to the family's complete, real portfolio data below. Answer questions about their portfolio directly and specifically — use actual numbers, names, and holdings from the data. Be concise and conversational. Use ₹ for values, Indian number formatting (Cr, L). Do not give generic financial advice — always refer to their specific holdings and numbers.
+
+${portfolioCtx}`,
+          messages: history,
+        })
+      });
+      const data = await res.json();
+      const reply = data.content?.find(c=>c.type==="text")?.text || "Sorry, I couldn't process that.";
+      setAiMessages(p=>[...p, {role:"assistant", content:reply, ts:new Date()}]);
+    }catch(e){
+      setAiMessages(p=>[...p, {role:"assistant", content:"Something went wrong. Check your Anthropic API key.", ts:new Date()}]);
+    }
+    setAiLoading(false);
+    setTimeout(()=>aiBottomRef.current?.scrollIntoView({behavior:"smooth"}),50);
+  }
 
   // ── CSV import ──
   function handleCSV(file){
@@ -419,7 +655,8 @@ export default function App() {
           <button className="btn-o" onClick={()=>csvRef.current?.click()}>⇑ CSV</button>
           <input ref={csvRef} type="file" accept=".csv" style={{display:"none"}} onChange={e=>{if(e.target.files[0]){handleCSV(e.target.files[0]);e.target.value="";}}}/>
           <button className="btn-g" onClick={generatePDF}>⤓ PDF</button>
-          <button className="btn-p" onClick={()=>{setForm(BF);setEditHolding(null);setModal("holding");}}>+ Add</button>
+          <button className="btn-o" onClick={()=>{setForm(BF);setEditHolding(null);setModal("holding");}}>+ Holding</button>
+          <button className="btn-p" onClick={()=>{setTxnForm(BT);setGlobalTxnModal(true);}}>+ Transaction</button>
           {/* User */}
           <div style={{display:"flex",alignItems:"center",gap:".4rem",paddingLeft:".4rem",borderLeft:"1px solid rgba(255,255,255,.07)"}}>
             {user.user_metadata?.avatar_url
@@ -444,9 +681,11 @@ export default function App() {
 
         {/* Tabs */}
         <div className="tabs">
-          {["overview","holdings","goals","alerts","members"].map(t=>(
+          {["overview","holdings","goals","alerts","members","ask"].map(t=>(
             <div key={t} className={`tab${tab===t?" act":""}`} onClick={()=>setTab(t)}>
-              {t==="alerts"&&trigAlerts.length>0?<span>{t} <span className="tbadge">{trigAlerts.length}</span></span>:t[0].toUpperCase()+t.slice(1)}
+              {t==="alerts"&&trigAlerts.length>0?<span>{t} <span className="tbadge">{trigAlerts.length}</span></span>
+               :t==="ask"?<span style={{display:"flex",alignItems:"center",gap:".35rem"}}>✦ Advisor</span>
+               :t[0].toUpperCase()+t.slice(1)}
             </div>
           ))}
         </div>
@@ -515,8 +754,11 @@ export default function App() {
                         </td>
                         <td>
                           <div style={{display:"flex",gap:3}}>
-                            <button className="delbtn" title="Attach documents" onClick={()=>setArtifactHolding(h)} style={{color:artCount>0?"#c9a84c":"rgba(232,224,208,.28)"}}>
-                              📎{artCount>0?` ${artCount}`:""}
+                            <button className="delbtn" title="View transactions" onClick={()=>{setTxnForm({...BT,holding_id:h.id});setTxnHolding(h);}} style={{color:(h.transactions||[]).length>0?"#a084ca":"rgba(232,224,208,.28)"}}>
+                              📋{(h.transactions||[]).length>0?` ${(h.transactions||[]).length}`:""}
+                            </button>
+                            <button className="delbtn" title="Attach documents" onClick={()=>setArtifactHolding(h)} style={{color:(h.artifacts||[]).length>0?"#c9a84c":"rgba(232,224,208,.28)"}}>
+                              📎{(h.artifacts||[]).length>0?` ${(h.artifacts||[]).length}`:""}
                             </button>
                             <button className="delbtn" style={{color:"rgba(90,156,224,.5)"}} onClick={()=>editH(h)}>✎</button>
                             <button className="delbtn" onClick={()=>deleteHolding(h.id)}>✕</button>
@@ -555,6 +797,106 @@ export default function App() {
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"1.2rem"}}><div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.1rem",color:"#e8e0d0"}}>Family Members</div><button className="btn-sm" onClick={()=>{setNewMember({name:"",relation:""});setModal("member");}}>+ Add Member</button></div>
           {mSum.map(m=>{const hs=holdings.filter(h=>h.member_id===m.id);const byT=Object.keys(AT).map(t=>({t,v:hs.filter(h=>h.type===t).reduce((s,h)=>s+getVal(h),0)})).filter(x=>x.v>0);return(<div key={m.id} className="card" style={{marginBottom:"1rem"}}><div style={{display:"flex",alignItems:"center",gap:".82rem",marginBottom:".95rem"}}><div className="av" style={{width:42,height:42,fontSize:"1rem"}}>{m.name[0]}</div><div><div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.2rem",color:"#e8e0d0"}}>{m.name}</div><div style={{fontSize:".68rem",color:"rgba(232,224,208,.33)",textTransform:"uppercase",letterSpacing:".08em"}}>{m.relation}</div></div><div style={{marginLeft:"auto",textAlign:"right"}}><div style={{fontFamily:"'DM Mono',monospace",fontSize:"1rem",color:"#c9a84c"}}>{fmt(m.cur)}</div><div className={m.gain>=0?"gain":"loss"} style={{fontSize:".73rem"}}>{fmtPct(m.pct)}</div></div></div><div style={{display:"flex",gap:".45rem",flexWrap:"wrap"}}>{byT.map(({t,v})=>{const a=AT[t];return(<div key={t} style={{background:a.color+"18",border:`1px solid ${a.color}44`,borderRadius:5,padding:".38rem .7rem",fontSize:".73rem",color:a.color}}>{a.icon} {a.label}: {fmt(v)}</div>);})}</div></div>);})}
         </>)}
+
+        {/* ── ASK AI ── */}
+        {tab==="ask"&&(
+          <div style={{display:"flex",flexDirection:"column",height:"calc(100vh - 280px)",minHeight:500}}>
+            {/* Header */}
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"1rem"}}>
+              <div>
+                <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.1rem",color:"#e8e0d0"}}>✦ Advisor</div>
+                <div style={{fontSize:".72rem",color:"rgba(232,224,208,.35)",marginTop:".2rem"}}>Ask anything about your holdings, returns, goals, or allocation</div>
+              </div>
+              {aiMessages.length>0&&<button className="btn-sm" onClick={()=>setAiMessages([])}>Clear chat</button>}
+            </div>
+
+            {/* Suggested questions — shown when chat is empty */}
+            {aiMessages.length===0&&(
+              <div style={{marginBottom:"1.2rem"}}>
+                <div style={{fontSize:".68rem",letterSpacing:".1em",textTransform:"uppercase",color:"rgba(232,224,208,.28)",marginBottom:".65rem"}}>Suggested questions</div>
+                <div style={{display:"flex",flexWrap:"wrap",gap:".5rem"}}>
+                  {[
+                    "What is my total portfolio value today?",
+                    "Which holding has the best XIRR?",
+                    "How much have I invested in mutual funds?",
+                    "What is Priya's total portfolio worth?",
+                    "Which holdings are at a loss?",
+                    "How far am I from my retirement goal?",
+                    "What percentage of my portfolio is in equity?",
+                    "Which is my largest single holding?",
+                  ].map(q=>(
+                    <button key={q} onClick={()=>{setAiInput(q);}}
+                      style={{background:"rgba(255,255,255,.04)",border:"1px solid rgba(255,255,255,.1)",color:"rgba(232,224,208,.55)",padding:".38rem .8rem",borderRadius:20,cursor:"pointer",fontSize:".74rem",fontFamily:"'DM Sans',sans-serif",transition:"all .2s",textAlign:"left"}}
+                      onMouseEnter={e=>{e.target.style.background="rgba(201,168,76,.1)";e.target.style.color="#c9a84c";e.target.style.borderColor="rgba(201,168,76,.3)";}}
+                      onMouseLeave={e=>{e.target.style.background="rgba(255,255,255,.04)";e.target.style.color="rgba(232,224,208,.55)";e.target.style.borderColor="rgba(255,255,255,.1)";}}>
+                      {q}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Chat messages */}
+            <div style={{flex:1,overflowY:"auto",display:"flex",flexDirection:"column",gap:".85rem",paddingRight:".25rem",marginBottom:"1rem"}}>
+              {aiMessages.map((m,i)=>(
+                <div key={i} style={{display:"flex",flexDirection:"column",alignItems:m.role==="user"?"flex-end":"flex-start"}}>
+                  {/* Role label */}
+                  <div style={{fontSize:".62rem",color:"rgba(232,224,208,.28)",marginBottom:".3rem",letterSpacing:".06em",textTransform:"uppercase"}}>
+                    {m.role==="user"?"You":"✦ Advisor"}
+                  </div>
+                  {/* Bubble */}
+                  <div style={{
+                    maxWidth:"80%",
+                    padding:".75rem 1rem",
+                    borderRadius: m.role==="user"?"12px 12px 2px 12px":"12px 12px 12px 2px",
+                    background: m.role==="user"?"rgba(201,168,76,.14)":"rgba(255,255,255,.04)",
+                    border: m.role==="user"?"1px solid rgba(201,168,76,.3)":"1px solid rgba(255,255,255,.08)",
+                    fontSize:".82rem",
+                    lineHeight:1.65,
+                    color: m.role==="user"?"#e8e0d0":"rgba(232,224,208,.85)",
+                    whiteSpace:"pre-wrap",
+                    fontFamily:"'DM Sans',sans-serif",
+                  }}>
+                    {m.content}
+                  </div>
+                </div>
+              ))}
+              {/* Typing indicator */}
+              {aiLoading&&(
+                <div style={{display:"flex",flexDirection:"column",alignItems:"flex-start"}}>
+                  <div style={{fontSize:".62rem",color:"rgba(232,224,208,.28)",marginBottom:".3rem",letterSpacing:".06em",textTransform:"uppercase"}}>✦ Advisor</div>
+                  <div style={{padding:".75rem 1rem",borderRadius:"12px 12px 12px 2px",background:"rgba(255,255,255,.04)",border:"1px solid rgba(255,255,255,.08)",display:"flex",gap:".35rem",alignItems:"center"}}>
+                    {[0,1,2].map(i=>(
+                      <div key={i} style={{width:6,height:6,borderRadius:"50%",background:"rgba(201,168,76,.5)",animation:`bounce 1.2s ${i*0.2}s infinite`}}/>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div ref={aiBottomRef}/>
+            </div>
+
+            {/* Input bar */}
+            <div style={{display:"flex",gap:".6rem",alignItems:"flex-end"}}>
+              <textarea
+                className="fi"
+                rows={2}
+                placeholder="Ask anything about your portfolio… e.g. 'Which MF has the best return?' or 'How much has Arjun invested?'"
+                value={aiInput}
+                onChange={e=>setAiInput(e.target.value)}
+                onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();askAI();}}}
+                style={{flex:1,resize:"none",lineHeight:1.5,fontSize:".82rem",padding:".65rem .9rem"}}
+              />
+              <button className="btns" onClick={askAI} disabled={!aiInput.trim()||aiLoading}
+                style={{padding:".65rem 1.2rem",whiteSpace:"nowrap",alignSelf:"stretch"}}>
+                {aiLoading?"…":"Send ↵"}
+              </button>
+            </div>
+            <div style={{fontSize:".65rem",color:"rgba(232,224,208,.22)",marginTop:".4rem",textAlign:"center"}}>
+              Press Enter to send · Shift+Enter for new line · Conversation context is maintained across messages
+            </div>
+            <style>{`@keyframes bounce{0%,80%,100%{transform:translateY(0)}40%{transform:translateY(-5px)}}`}</style>
+          </div>
+        )}
       </main>
     </div>
 
@@ -565,40 +907,71 @@ export default function App() {
     {modal==="holding"&&(
       <Overlay onClose={()=>{setModal(null);setEditHolding(null);setForm(BF);}}>
         <div className="modtitle">{editHolding?"Edit":"Add"} Holding</div>
+        <div style={{fontSize:".75rem",color:"rgba(232,224,208,.38)",marginBottom:"1rem",lineHeight:1.6}}>
+          {editHolding?"Update instrument details below.":"Register the instrument. Transactions (buy/sell) are added separately via the "+ Transaction" button."}
+        </div>
         <div className="frow">
           <FG label="Member"><select className="fi fs" value={form.member_id} onChange={e=>setForm(f=>({...f,member_id:e.target.value}))}><option value="">Select</option>{members.map(m=><option key={m.id} value={m.id}>{m.name}</option>)}</select></FG>
           <FG label="Asset Type"><select className="fi fs" value={form.type} onChange={e=>setForm(f=>({...f,type:e.target.value}))}>{Object.entries(AT).map(([k,v])=><option key={k} value={k}>{v.icon} {v.label}</option>)}</select></FG>
         </div>
-        <FG label="Name"><input className="fi" value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))}/></FG>
-        {(form.type==="IN_STOCK")&&<FG label="NSE Ticker (for live prices, e.g. RELIANCE)"><input className="fi" placeholder="RELIANCE" value={form.ticker} onChange={e=>setForm(f=>({...f,ticker:e.target.value.toUpperCase()}))}/></FG>}
-        {(form.type==="US_STOCK")&&<FG label="US Ticker (e.g. AAPL, NVDA)"><input className="fi" placeholder="AAPL" value={form.ticker} onChange={e=>setForm(f=>({...f,ticker:e.target.value.toUpperCase()}))}/></FG>}
-        {(form.type==="MF")&&<FG label="AMFI Scheme Code (e.g. 119551 — find at mfapi.in)"><input className="fi" placeholder="119551" value={form.scheme_code} onChange={e=>setForm(f=>({...f,scheme_code:e.target.value}))}/></FG>}
-        <FG label="Start Date"><input type="date" className="fi" value={form.start_date} onChange={e=>setForm(f=>({...f,start_date:e.target.value}))}/></FG>
-        {form.type==="IN_STOCK"&&<div className="frow">
-          <FG label="Units"><input type="number" className="fi" value={form.units} onChange={e=>setForm(f=>({...f,units:e.target.value}))}/></FG>
-          <FG label="Buy Price ₹"><input type="number" className="fi" value={form.purchase_price} onChange={e=>setForm(f=>({...f,purchase_price:e.target.value}))}/></FG>
-          {!form.ticker&&<FG label="Current ₹ (manual — or add ticker for live)"><input type="number" className="fi" value={form.current_price} onChange={e=>setForm(f=>({...f,current_price:e.target.value}))}/></FG>}
-          {form.ticker&&<div style={{display:"flex",alignItems:"center",padding:".55rem .8rem",background:"rgba(76,175,154,.07)",border:"1px solid rgba(76,175,154,.22)",borderRadius:6,fontSize:".75rem",color:"#4caf9a",flex:1}}>✓ Live price will be fetched automatically</div>}
-        </div>}
-        {form.type==="US_STOCK"&&<div className="frow">
-          <FG label="Units"><input type="number" className="fi" value={form.units} onChange={e=>setForm(f=>({...f,units:e.target.value}))}/></FG>
-          <FG label="Buy USD"><input type="number" className="fi" value={form.purchase_price} onChange={e=>setForm(f=>({...f,purchase_price:e.target.value}))}/></FG>
-          {!form.ticker&&<FG label="Current USD (manual — or add ticker for live)"><input type="number" className="fi" value={form.current_price} onChange={e=>setForm(f=>({...f,current_price:e.target.value}))}/></FG>}
-          {form.ticker&&<div style={{display:"flex",alignItems:"center",padding:".55rem .8rem",background:"rgba(76,175,154,.07)",border:"1px solid rgba(76,175,154,.22)",borderRadius:6,fontSize:".75rem",color:"#4caf9a",flex:1}}>✓ Live price will be fetched automatically</div>}
-          <FG label="USD/INR"><input type="number" className="fi" value={form.usd_inr_rate} onChange={e=>setForm(f=>({...f,usd_inr_rate:e.target.value}))}/></FG>
-        </div>}
-        {form.type==="MF"&&<div className="frow">
-          <FG label="Units"><input type="number" className="fi" value={form.units} onChange={e=>setForm(f=>({...f,units:e.target.value}))}/></FG>
-          <FG label="Purchase NAV"><input type="number" className="fi" value={form.purchase_nav} onChange={e=>setForm(f=>({...f,purchase_nav:e.target.value}))}/></FG>
-          {!form.scheme_code&&<FG label="Current NAV (manual — or add scheme code for live)"><input type="number" className="fi" value={form.current_nav} onChange={e=>setForm(f=>({...f,current_nav:e.target.value}))}/></FG>}
-          {form.scheme_code&&<div style={{display:"flex",alignItems:"center",padding:".55rem .8rem",background:"rgba(76,175,154,.07)",border:"1px solid rgba(76,175,154,.22)",borderRadius:6,fontSize:".75rem",color:"#4caf9a",flex:1}}>✓ NAV will be fetched automatically</div>}
-        </div>}
-        {form.type==="FD"&&<div className="frow"><FG label="Principal ₹"><input type="number" className="fi" value={form.principal} onChange={e=>setForm(f=>({...f,principal:e.target.value}))}/></FG><FG label="Rate % p.a."><input type="number" className="fi" value={form.interest_rate} onChange={e=>setForm(f=>({...f,interest_rate:e.target.value}))}/></FG><FG label="Maturity"><input type="date" className="fi" value={form.maturity_date} onChange={e=>setForm(f=>({...f,maturity_date:e.target.value}))}/></FG></div>}
-        {(form.type==="PPF"||form.type==="EPF")&&<FG label={`Corpus (auto: ${form.type==="PPF"?PPF_R:EPF_R}% p.a.)`}><input type="number" className="fi" value={form.principal} onChange={e=>setForm(f=>({...f,principal:e.target.value}))}/></FG>}
-        {form.type==="REAL_ESTATE"&&<div className="frow"><FG label="Purchase Value ₹"><input type="number" className="fi" value={form.purchase_value} onChange={e=>setForm(f=>({...f,purchase_value:e.target.value}))}/></FG><FG label="Current Value ₹"><input type="number" className="fi" value={form.current_value} onChange={e=>setForm(f=>({...f,current_value:e.target.value}))}/></FG></div>}
-        <MA><button className="btnc" onClick={()=>{setModal(null);setEditHolding(null);}}>Cancel</button><button className="btns" onClick={saveHolding} disabled={!form.name||!form.member_id}>{editHolding?"Save Changes":"Add Holding"}</button></MA>
+        <FG label="Name"><input className="fi" placeholder="e.g. Reliance Industries" value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))}/></FG>
+        {form.type==="IN_STOCK"&&<FG label="NSE Ticker (for live prices)"><input className="fi" placeholder="e.g. RELIANCE" value={form.ticker||""} onChange={e=>setForm(f=>({...f,ticker:e.target.value.toUpperCase()}))}/></FG>}
+        {form.type==="US_STOCK"&&<div className="frow"><FG label="US Ticker"><input className="fi" placeholder="e.g. AAPL" value={form.ticker||""} onChange={e=>setForm(f=>({...f,ticker:e.target.value.toUpperCase()}))}/></FG><FG label="USD/INR Rate"><input type="number" className="fi" value={form.usd_inr_rate} onChange={e=>setForm(f=>({...f,usd_inr_rate:e.target.value}))}/></FG></div>}
+        {form.type==="MF"&&<FG label="AMFI Scheme Code (find at mfapi.in)"><input className="fi" placeholder="e.g. 119551" value={form.scheme_code||""} onChange={e=>setForm(f=>({...f,scheme_code:e.target.value}))}/></FG>}
+        {form.type==="FD"&&<div className="frow"><FG label="Principal ₹"><input type="number" className="fi" value={form.principal||""} onChange={e=>setForm(f=>({...f,principal:e.target.value}))}/></FG><FG label="Rate % p.a."><input type="number" className="fi" value={form.interest_rate||""} onChange={e=>setForm(f=>({...f,interest_rate:e.target.value}))}/></FG><FG label="Maturity Date"><input type="date" className="fi" value={form.maturity_date||""} onChange={e=>setForm(f=>({...f,maturity_date:e.target.value}))}/></FG></div>}
+        {(form.type==="PPF"||form.type==="EPF")&&<FG label={`Current Corpus ₹ (auto-grows at ${form.type==="PPF"?PPF_R:EPF_R}% p.a.)`}><input type="number" className="fi" value={form.principal||""} onChange={e=>setForm(f=>({...f,principal:e.target.value}))}/></FG>}
+        {form.type==="REAL_ESTATE"&&<div className="frow"><FG label="Purchase Value ₹"><input type="number" className="fi" value={form.purchase_value||""} onChange={e=>setForm(f=>({...f,purchase_value:e.target.value}))}/></FG><FG label="Current Value ₹"><input type="number" className="fi" value={form.current_value||""} onChange={e=>setForm(f=>({...f,current_value:e.target.value}))}/></FG></div>}
+        <FG label="Start Date"><input type="date" className="fi" value={form.start_date||""} onChange={e=>setForm(f=>({...f,start_date:e.target.value}))}/></FG>
+        {["IN_STOCK","US_STOCK","MF"].includes(form.type)&&!editHolding&&(
+          <div style={{fontSize:".72rem",color:"#4caf9a",padding:".55rem .8rem",background:"rgba(76,175,154,.07)",border:"1px solid rgba(76,175,154,.2)",borderRadius:6,marginTop:".25rem"}}>
+            ✓ After saving, "+ Transaction" will open automatically to record your first buy.
+          </div>
+        )}
+        <MA><button className="btnc" onClick={()=>{setModal(null);setEditHolding(null);setForm(BF);}}>Cancel</button><button className="btns" onClick={saveHolding} disabled={!form.name||!form.member_id}>{editHolding?"Save Changes":"Add Holding"}</button></MA>
       </Overlay>
     )}
+
+    {/* Global Add Transaction modal */}
+    {globalTxnModal&&(
+      <Overlay onClose={()=>setGlobalTxnModal(false)}>
+        <div className="modtitle">Add Transaction</div>
+        <FG label="Holding">
+          <select className="fi fs" value={txnForm.holding_id} onChange={e=>setTxnForm(p=>({...p,holding_id:e.target.value}))}>
+            <option value="">Select holding…</option>
+            {holdings.filter(h=>["IN_STOCK","US_STOCK","MF"].includes(h.type)).map(h=>{
+              const mn=members.find(m=>m.id===h.member_id)?.name||"";
+              return <option key={h.id} value={h.id}>{h.name}{mn?` (${mn})`:""}</option>;
+            })}
+          </select>
+        </FG>
+        <div className="frow">
+          <FG label="Type">
+            <select className="fi fs" value={txnForm.txn_type} onChange={e=>setTxnForm(p=>({...p,txn_type:e.target.value}))}>
+              <option value="BUY">BUY</option>
+              <option value="SELL">SELL</option>
+            </select>
+          </FG>
+          <FG label="Units"><input type="number" className="fi" placeholder="e.g. 50" value={txnForm.units} onChange={e=>setTxnForm(p=>({...p,units:e.target.value}))}/></FG>
+          <FG label="Price ₹ per unit"><input type="number" className="fi" placeholder="e.g. 2450" value={txnForm.price} onChange={e=>setTxnForm(p=>({...p,price:e.target.value}))}/></FG>
+        </div>
+        <div className="frow">
+          <FG label="Date"><input type="date" className="fi" value={txnForm.txn_date} onChange={e=>setTxnForm(p=>({...p,txn_date:e.target.value}))}/></FG>
+          <FG label="Notes (optional)"><input className="fi" placeholder="e.g. SIP, bonus, tax harvesting" value={txnForm.notes} onChange={e=>setTxnForm(p=>({...p,notes:e.target.value}))}/></FG>
+        </div>
+        {txnForm.holding_id&&txnForm.units&&txnForm.price&&(
+          <div style={{fontSize:".75rem",color:"rgba(232,224,208,.45)",padding:".5rem .8rem",background:"rgba(255,255,255,.03)",borderRadius:6,marginBottom:".5rem"}}>
+            Total value: ₹{(+txnForm.units * +txnForm.price).toLocaleString("en-IN",{maximumFractionDigits:0})}
+          </div>
+        )}
+        <MA>
+          <button className="btnc" onClick={()=>setGlobalTxnModal(false)}>Cancel</button>
+          <button className="btns" onClick={addTransaction} disabled={!txnForm.holding_id||!txnForm.units||!txnForm.price||!txnForm.txn_date}>Save Transaction</button>
+        </MA>
+      </Overlay>
+    )}
+
+    {/* Inline transaction history panel (opened from 📋 button on holding row) */}
+    {txnHolding&&<TransactionPanel holding={txnHolding} txnForm={txnForm} setTxnForm={setTxnForm} onAddTxn={addTransaction} onDeleteTxn={deleteTransaction} onClose={()=>setTxnHolding(null)}/>}
     {modal==="member"&&(<Overlay onClose={()=>setModal(null)} narrow><div className="modtitle">Add Family Member</div><FG label="Full Name"><input className="fi" value={newMember.name} onChange={e=>setNewMember(p=>({...p,name:e.target.value}))}/></FG><FG label="Relation"><select className="fi fs" value={newMember.relation} onChange={e=>setNewMember(p=>({...p,relation:e.target.value}))}><option value="">Select</option>{["Self","Spouse","Son","Daughter","Father","Mother","Sibling"].map(r=><option key={r} value={r}>{r}</option>)}</select></FG><MA><button className="btnc" onClick={()=>setModal(null)}>Cancel</button><button className="btns" onClick={addMember}>Add</button></MA></Overlay>)}
     {modal==="goal"&&(<Overlay onClose={()=>setModal(null)}><div className="modtitle">Add Financial Goal</div><FG label="Goal Name"><input className="fi" value={goalForm.name} onChange={e=>setGoalForm(p=>({...p,name:e.target.value}))}/></FG><div className="frow"><FG label="Target Amount ₹"><input type="number" className="fi" value={goalForm.targetAmount} onChange={e=>setGoalForm(p=>({...p,targetAmount:e.target.value}))}/></FG><FG label="Target Date"><input type="date" className="fi" value={goalForm.targetDate} onChange={e=>setGoalForm(p=>({...p,targetDate:e.target.value}))}/></FG></div><div className="frow"><FG label="Category"><select className="fi fs" value={goalForm.category} onChange={e=>setGoalForm(p=>({...p,category:e.target.value}))}>{["Retirement","Education","Real Estate","Emergency Fund","Wedding","Travel","Business"].map(c=><option key={c} value={c}>{c}</option>)}</select></FG><FG label="Colour"><input type="color" className="fi" value={goalForm.color} onChange={e=>setGoalForm(p=>({...p,color:e.target.value}))} style={{height:40,padding:"4px 8px",cursor:"pointer"}}/></FG></div><FG label="Notes"><input className="fi" value={goalForm.notes} onChange={e=>setGoalForm(p=>({...p,notes:e.target.value}))}/></FG><MA><button className="btnc" onClick={()=>setModal(null)}>Cancel</button><button className="btns" onClick={addGoal} disabled={!goalForm.name||!goalForm.targetAmount}>Add Goal</button></MA></Overlay>)}
     {modal==="alert"&&(<Overlay onClose={()=>setModal(null)} narrow><div className="modtitle">New Alert Rule</div><FG label="Alert Type"><select className="fi fs" value={alertForm.type} onChange={e=>setAlertForm(p=>({...p,type:e.target.value}))}><option value="ALLOCATION_DRIFT">Over-weight</option><option value="CONCENTRATION">Under-weight</option><option value="RETURN_TARGET">Return below target</option></select></FG>{alertForm.type!=="RETURN_TARGET"&&<FG label="Asset Class"><select className="fi fs" value={alertForm.assetType} onChange={e=>setAlertForm(p=>({...p,assetType:e.target.value}))}>{Object.entries(AT).map(([k,v])=><option key={k} value={k}>{v.icon} {v.label}</option>)}</select></FG>}<FG label={alertForm.type==="RETURN_TARGET"?"Target Return %":"Threshold %"}><input type="number" className="fi" value={alertForm.threshold} onChange={e=>setAlertForm(p=>({...p,threshold:e.target.value}))}/></FG><FG label="Description"><input className="fi" value={alertForm.label} onChange={e=>setAlertForm(p=>({...p,label:e.target.value}))}/></FG><MA><button className="btnc" onClick={()=>setModal(null)}>Cancel</button><button className="btns" onClick={addAlert} disabled={!alertForm.threshold||!alertForm.label}>Add Alert</button></MA></Overlay>)}
