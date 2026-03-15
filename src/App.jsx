@@ -908,7 +908,7 @@ ${portfolioCtx}`,
       <Overlay onClose={()=>{setModal(null);setEditHolding(null);setForm(BF);}}>
         <div className="modtitle">{editHolding?"Edit":"Add"} Holding</div>
         <div style={{fontSize:".75rem",color:"rgba(232,224,208,.38)",marginBottom:"1rem",lineHeight:1.6}}>
-          {editHolding?"Update instrument details below.":"Register the instrument. Transactions (buy/sell) are added separately via the "+ Transaction" button."}
+          {editHolding?"Update instrument details below.":"Register the instrument. Transactions (buy/sell) are added separately via the + Transaction button."}
         </div>
         <div className="frow">
           <FG label="Member"><select className="fi fs" value={form.member_id} onChange={e=>setForm(f=>({...f,member_id:e.target.value}))}><option value="">Select</option>{members.map(m=><option key={m.id} value={m.id}>{m.name}</option>)}</select></FG>
