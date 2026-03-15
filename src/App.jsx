@@ -247,6 +247,15 @@ export default function App() {
           setMembers(portfolio.members||[]);
           setGoals(portfolio.goals||[]);
           setAlerts(portfolio.alerts||[]);
+        } else {
+          // First time loading — seed with sample data and save to DB
+          setMembers(SEED.members);
+          setGoals(SEED.goals);
+          setAlerts(SEED.alerts);
+          api("/api/portfolio", {
+            method: "POST",
+            body: JSON.stringify({ members: SEED.members, goals: SEED.goals, alerts: SEED.alerts })
+          }).catch(() => {});
         }
         setHoldings(hlds||[]);
         // Compute last price refresh time from holdings
@@ -565,9 +574,25 @@ export default function App() {
         {(form.type==="US_STOCK")&&<FG label="US Ticker (e.g. AAPL, NVDA)"><input className="fi" placeholder="AAPL" value={form.ticker} onChange={e=>setForm(f=>({...f,ticker:e.target.value.toUpperCase()}))}/></FG>}
         {(form.type==="MF")&&<FG label="AMFI Scheme Code (e.g. 119551 — find at mfapi.in)"><input className="fi" placeholder="119551" value={form.scheme_code} onChange={e=>setForm(f=>({...f,scheme_code:e.target.value}))}/></FG>}
         <FG label="Start Date"><input type="date" className="fi" value={form.start_date} onChange={e=>setForm(f=>({...f,start_date:e.target.value}))}/></FG>
-        {form.type==="IN_STOCK"&&<div className="frow"><FG label="Units"><input type="number" className="fi" value={form.units} onChange={e=>setForm(f=>({...f,units:e.target.value}))}/></FG><FG label="Buy Price ₹"><input type="number" className="fi" value={form.purchase_price} onChange={e=>setForm(f=>({...f,purchase_price:e.target.value}))}/></FG><FG label="Current ₹ (manual)"><input type="number" className="fi" value={form.current_price} onChange={e=>setForm(f=>({...f,current_price:e.target.value}))}/></FG></div>}
-        {form.type==="US_STOCK"&&<div className="frow"><FG label="Units"><input type="number" className="fi" value={form.units} onChange={e=>setForm(f=>({...f,units:e.target.value}))}/></FG><FG label="Buy USD"><input type="number" className="fi" value={form.purchase_price} onChange={e=>setForm(f=>({...f,purchase_price:e.target.value}))}/></FG><FG label="Current USD"><input type="number" className="fi" value={form.current_price} onChange={e=>setForm(f=>({...f,current_price:e.target.value}))}/></FG><FG label="USD/INR"><input type="number" className="fi" value={form.usd_inr_rate} onChange={e=>setForm(f=>({...f,usd_inr_rate:e.target.value}))}/></FG></div>}
-        {form.type==="MF"&&<div className="frow"><FG label="Units"><input type="number" className="fi" value={form.units} onChange={e=>setForm(f=>({...f,units:e.target.value}))}/></FG><FG label="Purchase NAV"><input type="number" className="fi" value={form.purchase_nav} onChange={e=>setForm(f=>({...f,purchase_nav:e.target.value}))}/></FG><FG label="Current NAV (manual)"><input type="number" className="fi" value={form.current_nav} onChange={e=>setForm(f=>({...f,current_nav:e.target.value}))}/></FG></div>}
+        {form.type==="IN_STOCK"&&<div className="frow">
+          <FG label="Units"><input type="number" className="fi" value={form.units} onChange={e=>setForm(f=>({...f,units:e.target.value}))}/></FG>
+          <FG label="Buy Price ₹"><input type="number" className="fi" value={form.purchase_price} onChange={e=>setForm(f=>({...f,purchase_price:e.target.value}))}/></FG>
+          {!form.ticker&&<FG label="Current ₹ (manual — or add ticker for live)"><input type="number" className="fi" value={form.current_price} onChange={e=>setForm(f=>({...f,current_price:e.target.value}))}/></FG>}
+          {form.ticker&&<div style={{display:"flex",alignItems:"center",padding:".55rem .8rem",background:"rgba(76,175,154,.07)",border:"1px solid rgba(76,175,154,.22)",borderRadius:6,fontSize:".75rem",color:"#4caf9a",flex:1}}>✓ Live price will be fetched automatically</div>}
+        </div>}
+        {form.type==="US_STOCK"&&<div className="frow">
+          <FG label="Units"><input type="number" className="fi" value={form.units} onChange={e=>setForm(f=>({...f,units:e.target.value}))}/></FG>
+          <FG label="Buy USD"><input type="number" className="fi" value={form.purchase_price} onChange={e=>setForm(f=>({...f,purchase_price:e.target.value}))}/></FG>
+          {!form.ticker&&<FG label="Current USD (manual — or add ticker for live)"><input type="number" className="fi" value={form.current_price} onChange={e=>setForm(f=>({...f,current_price:e.target.value}))}/></FG>}
+          {form.ticker&&<div style={{display:"flex",alignItems:"center",padding:".55rem .8rem",background:"rgba(76,175,154,.07)",border:"1px solid rgba(76,175,154,.22)",borderRadius:6,fontSize:".75rem",color:"#4caf9a",flex:1}}>✓ Live price will be fetched automatically</div>}
+          <FG label="USD/INR"><input type="number" className="fi" value={form.usd_inr_rate} onChange={e=>setForm(f=>({...f,usd_inr_rate:e.target.value}))}/></FG>
+        </div>}
+        {form.type==="MF"&&<div className="frow">
+          <FG label="Units"><input type="number" className="fi" value={form.units} onChange={e=>setForm(f=>({...f,units:e.target.value}))}/></FG>
+          <FG label="Purchase NAV"><input type="number" className="fi" value={form.purchase_nav} onChange={e=>setForm(f=>({...f,purchase_nav:e.target.value}))}/></FG>
+          {!form.scheme_code&&<FG label="Current NAV (manual — or add scheme code for live)"><input type="number" className="fi" value={form.current_nav} onChange={e=>setForm(f=>({...f,current_nav:e.target.value}))}/></FG>}
+          {form.scheme_code&&<div style={{display:"flex",alignItems:"center",padding:".55rem .8rem",background:"rgba(76,175,154,.07)",border:"1px solid rgba(76,175,154,.22)",borderRadius:6,fontSize:".75rem",color:"#4caf9a",flex:1}}>✓ NAV will be fetched automatically</div>}
+        </div>}
         {form.type==="FD"&&<div className="frow"><FG label="Principal ₹"><input type="number" className="fi" value={form.principal} onChange={e=>setForm(f=>({...f,principal:e.target.value}))}/></FG><FG label="Rate % p.a."><input type="number" className="fi" value={form.interest_rate} onChange={e=>setForm(f=>({...f,interest_rate:e.target.value}))}/></FG><FG label="Maturity"><input type="date" className="fi" value={form.maturity_date} onChange={e=>setForm(f=>({...f,maturity_date:e.target.value}))}/></FG></div>}
         {(form.type==="PPF"||form.type==="EPF")&&<FG label={`Corpus (auto: ${form.type==="PPF"?PPF_R:EPF_R}% p.a.)`}><input type="number" className="fi" value={form.principal} onChange={e=>setForm(f=>({...f,principal:e.target.value}))}/></FG>}
         {form.type==="REAL_ESTATE"&&<div className="frow"><FG label="Purchase Value ₹"><input type="number" className="fi" value={form.purchase_value} onChange={e=>setForm(f=>({...f,purchase_value:e.target.value}))}/></FG><FG label="Current Value ₹"><input type="number" className="fi" value={form.current_value} onChange={e=>setForm(f=>({...f,current_value:e.target.value}))}/></FG></div>}
