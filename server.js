@@ -183,6 +183,42 @@ app.delete("/api/transactions/:id", auth, async (req, res) => {
   res.json({ ok: true });
 });
 
+// ── MF SEARCH — proxy to mfapi.in ────────────────────────────────
+app.get("/api/mf/search", auth, async (req, res) => {
+  const q = req.query.q || "";
+  if (q.length < 2) return res.json([]);
+  try {
+    const response = await fetch(`https://api.mfapi.in/mf/search?q=${encodeURIComponent(q)}`);
+    const data = await response.json();
+    // Return top 10 results with scheme code and name
+    res.json((data || []).slice(0, 10).map(f => ({
+      scheme_code: String(f.schemeCode),
+      name:        f.schemeName,
+    })));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── MF NAV LOOKUP — get current NAV for a scheme code ────────────
+app.get("/api/mf/nav/:schemeCode", auth, async (req, res) => {
+  try {
+    const response = await fetch(`https://api.mfapi.in/mf/${req.params.schemeCode}`);
+    const data = await response.json();
+    const nav = parseFloat(data?.data?.[0]?.nav);
+    const meta = data?.meta || {};
+    res.json({
+      nav:      isNaN(nav) ? null : nav,
+      date:     data?.data?.[0]?.date || null,
+      fund_house: meta.fund_house || "",
+      scheme_category: meta.scheme_category || "",
+      scheme_type: meta.scheme_type || "",
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── ANTHROPIC PROXY — all Claude API calls go through here ───────
 app.post("/api/ai/chat", auth, async (req, res) => {
   const key = process.env.ANTHROPIC_KEY;

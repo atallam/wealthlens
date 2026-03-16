@@ -321,6 +321,11 @@ export default function App() {
   const [txnHolding,     setTxnHolding]     = useState(null);
   const [txnForm,        setTxnForm]        = useState(BT);
   const [globalTxnModal, setGlobalTxnModal] = useState(false);
+  const [mfSearch,       setMfSearch]       = useState("");
+  const [mfResults,      setMfResults]      = useState([]);
+  const [mfSearching,    setMfSearching]    = useState(false);
+  const [mfNav,          setMfNav]          = useState(null); // {nav, date, fund_house, scheme_category}
+  const mfSearchTimer = useRef();
   const [aiMessages,     setAiMessages]     = useState([]); // {role, content, ts}
   const [aiInput,        setAiInput]        = useState("");
   const [aiLoading,      setAiLoading]      = useState(false);
@@ -465,6 +470,34 @@ export default function App() {
   function addMember(){if(!newMember.name)return;setMembers(p=>[...p,{id:uid(),...newMember}]);setNewMember({name:"",relation:""});setModal(null);}
   function addGoal(){setGoals(p=>[...p,{id:uid(),...goalForm,targetAmount:+goalForm.targetAmount}]);setGoalForm(BG);setModal(null);}
   function addAlert(){setAlerts(p=>[...p,{id:uid(),...alertForm,threshold:+alertForm.threshold}]);setAlertForm(BA);setModal(null);}
+
+  // ── MF Search ────────────────────────────────────────────────────
+  function handleMfSearch(val){
+    setMfSearch(val);
+    setMfResults([]);
+    setMfNav(null);
+    clearTimeout(mfSearchTimer.current);
+    if(val.length < 2){ setMfSearching(false); return; }
+    setMfSearching(true);
+    mfSearchTimer.current = setTimeout(async()=>{
+      try{
+        const results = await api(`/api/mf/search?q=${encodeURIComponent(val)}`);
+        setMfResults(results||[]);
+      }catch{ setMfResults([]); }
+      setMfSearching(false);
+    }, 400);
+  }
+
+  async function selectMfFund(fund){
+    setMfSearch(fund.name);
+    setMfResults([]);
+    setForm(f=>({...f, name:fund.name, scheme_code:fund.scheme_code}));
+    // Fetch current NAV and fund details
+    try{
+      const info = await api(`/api/mf/nav/${fund.scheme_code}`);
+      setMfNav(info);
+    }catch{ setMfNav(null); }
+  }
 
   // ── Build rich portfolio context for AI ──────────────────────────
   function buildPortfolioContext(){
@@ -912,7 +945,7 @@ ${alertLines||"  None"}`;
 
     {/* MODALS */}
     {modal==="holding"&&(
-      <Overlay onClose={()=>{setModal(null);setEditHolding(null);setForm(BF);}}>
+      <Overlay onClose={()=>{setModal(null);setEditHolding(null);setForm(BF);setMfSearch("");setMfResults([]);setMfNav(null);}}>
         <div className="modtitle">{editHolding?"Edit":"Add"} Holding</div>
         <div style={{fontSize:".75rem",color:"rgba(232,224,208,.38)",marginBottom:"1rem",lineHeight:1.6}}>
           {editHolding?"Update instrument details below.":"Register the instrument. Transactions (buy/sell) are added separately via the + Transaction button."}
@@ -924,7 +957,67 @@ ${alertLines||"  None"}`;
         <FG label="Name"><input className="fi" placeholder="e.g. Reliance Industries" value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))}/></FG>
         {form.type==="IN_STOCK"&&<FG label="NSE Ticker (for live prices)"><input className="fi" placeholder="e.g. RELIANCE" value={form.ticker||""} onChange={e=>setForm(f=>({...f,ticker:e.target.value.toUpperCase()}))}/></FG>}
         {form.type==="US_STOCK"&&<div className="frow"><FG label="US Ticker"><input className="fi" placeholder="e.g. AAPL" value={form.ticker||""} onChange={e=>setForm(f=>({...f,ticker:e.target.value.toUpperCase()}))}/></FG><FG label="USD/INR Rate"><input type="number" className="fi" value={form.usd_inr_rate} onChange={e=>setForm(f=>({...f,usd_inr_rate:e.target.value}))}/></FG></div>}
-        {form.type==="MF"&&<FG label="AMFI Scheme Code (find at mfapi.in)"><input className="fi" placeholder="e.g. 119551" value={form.scheme_code||""} onChange={e=>setForm(f=>({...f,scheme_code:e.target.value}))}/></FG>}
+        {form.type==="MF"&&(
+          <div style={{marginBottom:".85rem"}}>
+            <label className="flbl">Search Mutual Fund</label>
+            <div style={{position:"relative"}}>
+              <input
+                className="fi"
+                placeholder="Type fund name e.g. Mirae Asset Large Cap..."
+                value={mfSearch}
+                onChange={e=>{
+                  handleMfSearch(e.target.value);
+                  setForm(f=>({...f,name:e.target.value,scheme_code:""}));
+                  setMfNav(null);
+                }}
+                autoComplete="off"
+              />
+              {mfSearching&&<div style={{position:"absolute",right:".7rem",top:"50%",transform:"translateY(-50%)",fontSize:".7rem",color:"rgba(232,224,208,.4)"}}>Searching…</div>}
+            </div>
+            {/* Search results dropdown */}
+            {mfResults.length>0&&(
+              <div style={{background:"#0c1526",border:"1px solid rgba(201,168,76,.2)",borderRadius:"0 0 8px 8px",maxHeight:220,overflowY:"auto",marginTop:"-1px"}}>
+                {mfResults.map(f=>(
+                  <div key={f.scheme_code}
+                    onClick={()=>selectMfFund(f)}
+                    style={{padding:".6rem .85rem",cursor:"pointer",borderBottom:"1px solid rgba(255,255,255,.05)",fontSize:".8rem",color:"rgba(232,224,208,.75)",lineHeight:1.4}}
+                    onMouseEnter={e=>e.currentTarget.style.background="rgba(201,168,76,.08)"}
+                    onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                    <div style={{color:"#e8e0d0",marginBottom:".15rem"}}>{f.name}</div>
+                    <div style={{fontSize:".67rem",color:"rgba(232,224,208,.35)",fontFamily:"'DM Mono',monospace"}}>Code: {f.scheme_code}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {/* Selected fund info card */}
+            {form.scheme_code&&mfNav&&(
+              <div style={{marginTop:".6rem",padding:".7rem .9rem",background:"rgba(160,132,202,.08)",border:"1px solid rgba(160,132,202,.25)",borderRadius:7,fontSize:".75rem"}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:".35rem"}}>
+                  <div>
+                    <div style={{color:"#a084ca",fontWeight:500,marginBottom:".2rem"}}>{form.name}</div>
+                    <div style={{color:"rgba(232,224,208,.4)",fontSize:".68rem"}}>{mfNav.fund_house}</div>
+                    {mfNav.scheme_category&&<div style={{color:"rgba(232,224,208,.35)",fontSize:".65rem"}}>{mfNav.scheme_category}</div>}
+                  </div>
+                  <div style={{textAlign:"right",flexShrink:0,marginLeft:"1rem"}}>
+                    <div style={{fontFamily:"'DM Mono',monospace",fontSize:"1rem",color:"#c9a84c"}}>₹{mfNav.nav?.toFixed(4)}</div>
+                    <div style={{fontSize:".65rem",color:"rgba(232,224,208,.35)"}}>Current NAV · {mfNav.date}</div>
+                    <div style={{fontSize:".65rem",fontFamily:"'DM Mono',monospace",color:"rgba(232,224,208,.3)",marginTop:".15rem"}}>Code: {form.scheme_code}</div>
+                  </div>
+                </div>
+                <div style={{fontSize:".68rem",color:"#4caf9a"}}>✓ Live NAV will be fetched automatically on refresh</div>
+              </div>
+            )}
+            {/* Manual scheme code fallback */}
+            {!form.scheme_code&&!mfSearching&&mfSearch.length===0&&(
+              <div style={{marginTop:".5rem",fontSize:".7rem",color:"rgba(232,224,208,.28)"}}>
+                Or enter scheme code directly:&nbsp;
+                <input className="fi" style={{display:"inline",width:"auto",padding:".3rem .6rem",fontSize:".72rem"}}
+                  placeholder="e.g. 119551"
+                  onChange={e=>setForm(f=>({...f,scheme_code:e.target.value}))}/>
+              </div>
+            )}
+          </div>
+        )}
         {form.type==="FD"&&<div className="frow"><FG label="Principal ₹"><input type="number" className="fi" value={form.principal||""} onChange={e=>setForm(f=>({...f,principal:e.target.value}))}/></FG><FG label="Rate % p.a."><input type="number" className="fi" value={form.interest_rate||""} onChange={e=>setForm(f=>({...f,interest_rate:e.target.value}))}/></FG><FG label="Maturity Date"><input type="date" className="fi" value={form.maturity_date||""} onChange={e=>setForm(f=>({...f,maturity_date:e.target.value}))}/></FG></div>}
         {(form.type==="PPF"||form.type==="EPF")&&<FG label={`Current Corpus ₹ (auto-grows at ${form.type==="PPF"?PPF_R:EPF_R}% p.a.)`}><input type="number" className="fi" value={form.principal||""} onChange={e=>setForm(f=>({...f,principal:e.target.value}))}/></FG>}
         {form.type==="REAL_ESTATE"&&<div className="frow"><FG label="Purchase Value ₹"><input type="number" className="fi" value={form.purchase_value||""} onChange={e=>setForm(f=>({...f,purchase_value:e.target.value}))}/></FG><FG label="Current Value ₹"><input type="number" className="fi" value={form.current_value||""} onChange={e=>setForm(f=>({...f,current_value:e.target.value}))}/></FG></div>}
@@ -934,7 +1027,7 @@ ${alertLines||"  None"}`;
             ✓ After saving, "+ Transaction" will open automatically to record your first buy.
           </div>
         )}
-        <MA><button className="btnc" onClick={()=>{setModal(null);setEditHolding(null);setForm(BF);}}>Cancel</button><button className="btns" onClick={saveHolding} disabled={!form.name||!form.member_id}>{editHolding?"Save Changes":"Add Holding"}</button></MA>
+        <MA><button className="btnc" onClick={()=>{setModal(null);setEditHolding(null);setForm(BF);setMfSearch("");setMfResults([]);setMfNav(null);}}>Cancel</button><button className="btns" onClick={saveHolding} disabled={!form.name||!form.member_id}>{editHolding?"Save Changes":"Add Holding"}</button></MA>
       </Overlay>
     )}
 
