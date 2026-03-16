@@ -10,6 +10,7 @@ const AT = {
   EPF:         { label:"EPF",           color:"#6ec0c9", icon:"🏛️", cat:"Debt" },
   MF:          { label:"Mutual Fund",   color:"#a084ca", icon:"📊", cat:"Market" },
   IN_STOCK:    { label:"Indian Stocks", color:"#e07c5a", icon:"📈", cat:"Market" },
+  IN_ETF:      { label:"Indian ETF",   color:"#f0a050", icon:"🔷", cat:"Market" },
   US_STOCK:    { label:"US Stocks",     color:"#5a9ce0", icon:"🇺🇸", cat:"Market" },
   REAL_ESTATE: { label:"Real Estate",  color:"#7cb87c", icon:"🏠", cat:"Physical" },
 };
@@ -20,23 +21,25 @@ function calcFD(p,r,s,mat){const start=new Date(s),now=new Date(),m=new Date(mat
 function calcAccr(p,rate,s){const y=Math.max(0,(new Date()-new Date(s))/(864e5*365.25));return p*Math.pow(1+rate/100,y);}
 function getVal(h){
   switch(h.type){
-    case"FD":return calcFD(h.principal,h.interest_rate,h.start_date,h.maturity_date);
-    case"PPF":return calcAccr(h.principal,PPF_R,h.start_date);
-    case"EPF":return calcAccr(h.principal,EPF_R,h.start_date);
-    case"MF":return(h.units||0)*(h.current_nav||h.purchase_nav||0);
-    case"IN_STOCK":return(h.units||0)*(h.current_price||h.purchase_price||0);
-    case"US_STOCK":return(h.units||0)*(h.current_price||h.purchase_price||0)*(h.usd_inr_rate||83.2);
-    case"REAL_ESTATE":return h.current_value||h.purchase_value||0;
-    default:return h.principal||0;
+    case"FD":          return calcFD(h.principal,h.interest_rate,h.start_date,h.maturity_date);
+    case"PPF":         return calcAccr(h.principal,PPF_R,h.start_date);
+    case"EPF":         return calcAccr(h.principal,EPF_R,h.start_date);
+    case"MF":          return(h.units||0)*(h.current_nav||h.purchase_nav||0);
+    case"IN_STOCK":
+    case"IN_ETF":      return(h.units||0)*(h.current_price||h.purchase_price||0);
+    case"US_STOCK":    return(h.units||0)*(h.current_price||h.purchase_price||0)*(h.usd_inr_rate||83.2);
+    case"REAL_ESTATE": return h.current_value||h.purchase_value||0;
+    default:           return h.principal||0;
   }
 }
 function getInv(h){
   switch(h.type){
-    case"MF":return(h.units||0)*(h.purchase_nav||0);
-    case"IN_STOCK":return(h.units||0)*(h.purchase_price||0);
-    case"US_STOCK":return(h.units||0)*(h.purchase_price||0)*(h.usd_inr_rate||83.2);
-    case"REAL_ESTATE":return h.purchase_value||0;
-    default:return h.principal||0;
+    case"MF":          return(h.units||0)*(h.purchase_nav||0);
+    case"IN_STOCK":
+    case"IN_ETF":      return(h.units||0)*(h.purchase_price||0);
+    case"US_STOCK":    return(h.units||0)*(h.purchase_price||0)*(h.usd_inr_rate||83.2);
+    case"REAL_ESTATE": return h.purchase_value||0;
+    default:           return h.principal||0;
   }
 }
 function xirr(cfs,dates){if(cfs.length<2)return null;const d0=dates[0],yrs=dates.map(d=>(d-d0)/(864e5*365.25));const npv=r=>cfs.reduce((s,c,i)=>s+c/Math.pow(1+r,yrs[i]),0);const dnpv=r=>cfs.reduce((s,c,i)=>s-yrs[i]*c/Math.pow(1+r,yrs[i]+1),0);let r=0.1;for(let i=0;i<100;i++){const f=npv(r),df=dnpv(r);if(Math.abs(df)<1e-12)break;const nr=r-f/df;if(Math.abs(nr-r)<1e-7){r=nr;break;}r=nr;if(r<-0.999)r=-0.999;}return isFinite(r)?r*100:null;}
@@ -329,8 +332,13 @@ export default function App() {
   const [stockLooking,   setStockLooking]   = useState(false);
   const [usdInrRate,     setUsdInrRate]     = useState(83.2);
   const [usdInrLoading,  setUsdInrLoading]  = useState(false);
+  const [etfSearch,      setEtfSearch]      = useState("");
+  const [etfResults,     setEtfResults]     = useState([]);
+  const [etfSearching,   setEtfSearching]   = useState(false);
+  const [etfInfo,        setEtfInfo]        = useState(null);
   const mfSearchTimer  = useRef();
   const stockLookTimer = useRef();
+  const etfSearchTimer = useRef();
   const [aiMessages,     setAiMessages]     = useState([]); // {role, content, ts}
   const [aiInput,        setAiInput]        = useState("");
   const [aiLoading,      setAiLoading]      = useState(false);
@@ -432,7 +440,7 @@ export default function App() {
       setHoldings(hlds||[]);
       setModal(null); setForm(BF); setEditHolding(null);
       // For stock/MF holdings — auto-open Add Transaction so user records first buy immediately
-      if(!editHolding && ["IN_STOCK","US_STOCK","MF"].includes(h.type)){
+      if(!editHolding && ["IN_STOCK","IN_ETF","US_STOCK","MF"].includes(h.type)){
         const newH = hlds.find(x=>x.id===h.id);
         if(newH){ setTxnForm({...BT,holding_id:newH.id}); setGlobalTxnModal(true); }
       }
@@ -533,6 +541,34 @@ export default function App() {
       setForm(f=>({...f, usd_inr_rate: rate.toFixed(2)}));
     }catch{ /* keep existing rate */ }
     setUsdInrLoading(false);
+  }
+
+  // ── ETF Search ───────────────────────────────────────────────────
+  function handleEtfSearch(val){
+    setEtfSearch(val);
+    setEtfResults([]);
+    setEtfInfo(null);
+    clearTimeout(etfSearchTimer.current);
+    if(val.length < 2){ setEtfSearching(false); return; }
+    setEtfSearching(true);
+    etfSearchTimer.current = setTimeout(async()=>{
+      try{
+        const results = await api(`/api/etf/search?q=${encodeURIComponent(val)}`);
+        setEtfResults(results||[]);
+      }catch{ setEtfResults([]); }
+      setEtfSearching(false);
+    }, 400);
+  }
+
+  async function selectEtf(etf){
+    setEtfSearch(etf.name);
+    setEtfResults([]);
+    setForm(f=>({...f, name: etf.name, ticker: etf.ticker}));
+    // Fetch current price
+    try{
+      const info = await api(`/api/stock/info?ticker=${encodeURIComponent(etf.ticker)}&market=IN`);
+      setEtfInfo(info);
+    }catch{ setEtfInfo(null); }
   }
   function buildPortfolioContext(){
     const allCurCtx  = holdings.reduce((s,h)=>s+getVal(h),0);
@@ -979,7 +1015,7 @@ ${alertLines||"  None"}`;
 
     {/* MODALS */}
     {modal==="holding"&&(
-      <Overlay onClose={()=>{setModal(null);setEditHolding(null);setForm(BF);setMfSearch("");setMfResults([]);setMfNav(null);setStockInfo(null);}}>
+      <Overlay onClose={()=>{setModal(null);setEditHolding(null);setForm(BF);setMfSearch("");setMfResults([]);setMfNav(null);setStockInfo(null);setEtfSearch("");setEtfResults([]);setEtfInfo(null);}}>
         <div className="modtitle">{editHolding?"Edit":"Add"} Holding</div>
         <div style={{fontSize:".75rem",color:"rgba(232,224,208,.38)",marginBottom:"1rem",lineHeight:1.6}}>
           {editHolding?"Update instrument details below.":"Register the instrument. Transactions (buy/sell) are added separately via the + Transaction button."}
@@ -1010,6 +1046,65 @@ ${alertLines||"  None"}`;
             )}
             {stockInfo&&!stockInfo.found&&form.ticker&&!stockLooking&&(
               <div style={{marginTop:".5rem",fontSize:".72rem",color:"rgba(224,124,90,.6)"}}>⚠ Ticker not found on NSE — check spelling</div>
+            )}
+          </div>
+        )}
+
+        {form.type==="IN_ETF"&&(
+          <div style={{marginBottom:".85rem"}}>
+            <label className="flbl">Search Indian ETF</label>
+            <div style={{position:"relative"}}>
+              <input className="fi"
+                placeholder="Type ETF name e.g. Nifty BeES, Gold, Midcap…"
+                value={etfSearch}
+                onChange={e=>{
+                  handleEtfSearch(e.target.value);
+                  setForm(f=>({...f, name:e.target.value, ticker:""}));
+                  setEtfInfo(null);
+                }}
+                autoComplete="off"
+              />
+              {etfSearching&&<div style={{position:"absolute",right:".7rem",top:"50%",transform:"translateY(-50%)",fontSize:".7rem",color:"rgba(232,224,208,.4)"}}>Searching…</div>}
+            </div>
+            {/* Dropdown results */}
+            {etfResults.length>0&&(
+              <div style={{background:"#0c1526",border:"1px solid rgba(240,160,80,.2)",borderRadius:"0 0 8px 8px",maxHeight:220,overflowY:"auto",marginTop:"-1px"}}>
+                {etfResults.map(e=>(
+                  <div key={e.ticker}
+                    onClick={()=>selectEtf(e)}
+                    style={{padding:".6rem .85rem",cursor:"pointer",borderBottom:"1px solid rgba(255,255,255,.05)",fontSize:".8rem",lineHeight:1.4}}
+                    onMouseEnter={x=>x.currentTarget.style.background="rgba(240,160,80,.08)"}
+                    onMouseLeave={x=>x.currentTarget.style.background="transparent"}>
+                    <div style={{color:"#e8e0d0",marginBottom:".15rem"}}>{e.name}</div>
+                    <div style={{fontSize:".67rem",color:"rgba(232,224,208,.35)",fontFamily:"'DM Mono',monospace"}}>{e.ticker} · {e.exchange}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {/* No results message */}
+            {!etfSearching&&etfSearch.length>=2&&etfResults.length===0&&(
+              <div style={{marginTop:".5rem",fontSize:".72rem",color:"rgba(232,224,208,.35)"}}>
+                No ETFs found — try a shorter search term or enter ticker directly below
+              </div>
+            )}
+            {/* Selected ETF info card */}
+            {form.ticker&&etfInfo&&etfInfo.found&&(
+              <div style={{marginTop:".6rem",padding:".7rem .9rem",background:"rgba(240,160,80,.07)",border:"1px solid rgba(240,160,80,.25)",borderRadius:7,fontSize:".75rem",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <div>
+                  <div style={{color:"#f0a050",fontWeight:500}}>{etfInfo.name||form.name}</div>
+                  <div style={{color:"rgba(232,224,208,.38)",fontSize:".67rem"}}>{etfInfo.exchange} · {form.ticker}.NS · ETF</div>
+                </div>
+                {etfInfo.price&&<div style={{textAlign:"right"}}><div style={{fontFamily:"'DM Mono',monospace",color:"#c9a84c",fontSize:".9rem"}}>₹{etfInfo.price.toLocaleString("en-IN",{maximumFractionDigits:2})}</div><div style={{fontSize:".65rem",color:"rgba(232,224,208,.35)"}}>Current price</div></div>}
+              </div>
+            )}
+            {/* Manual ticker fallback */}
+            {!form.ticker&&(
+              <div style={{marginTop:".5rem",display:"flex",alignItems:"center",gap:".5rem",fontSize:".7rem",color:"rgba(232,224,208,.3)"}}>
+                Or enter ticker directly:
+                <input className="fi" style={{width:140,padding:".3rem .6rem",fontSize:".72rem",display:"inline"}}
+                  placeholder="e.g. NIFTYBEES"
+                  onChange={e=>{setForm(f=>({...f,ticker:e.target.value.toUpperCase()}));}}/>
+              </div>
             )}
           </div>
         )}
@@ -1125,12 +1220,12 @@ ${alertLines||"  None"}`;
         {(form.type==="PPF"||form.type==="EPF")&&<FG label={`Current Corpus ₹ (auto-grows at ${form.type==="PPF"?PPF_R:EPF_R}% p.a.)`}><input type="number" className="fi" value={form.principal||""} onChange={e=>setForm(f=>({...f,principal:e.target.value}))}/></FG>}
         {form.type==="REAL_ESTATE"&&<div className="frow"><FG label="Purchase Value ₹"><input type="number" className="fi" value={form.purchase_value||""} onChange={e=>setForm(f=>({...f,purchase_value:e.target.value}))}/></FG><FG label="Current Value ₹"><input type="number" className="fi" value={form.current_value||""} onChange={e=>setForm(f=>({...f,current_value:e.target.value}))}/></FG></div>}
         <FG label="Start Date"><input type="date" className="fi" value={form.start_date||""} onChange={e=>setForm(f=>({...f,start_date:e.target.value}))}/></FG>
-        {["IN_STOCK","US_STOCK","MF"].includes(form.type)&&!editHolding&&(
+        {["IN_STOCK","IN_ETF","US_STOCK","MF"].includes(form.type)&&!editHolding&&(
           <div style={{fontSize:".72rem",color:"#4caf9a",padding:".55rem .8rem",background:"rgba(76,175,154,.07)",border:"1px solid rgba(76,175,154,.2)",borderRadius:6,marginTop:".25rem"}}>
             ✓ After saving, "+ Transaction" will open automatically to record your first buy.
           </div>
         )}
-        <MA><button className="btnc" onClick={()=>{setModal(null);setEditHolding(null);setForm(BF);setMfSearch("");setMfResults([]);setMfNav(null);setStockInfo(null);}}>Cancel</button><button className="btns" onClick={saveHolding} disabled={!form.name||!form.member_id}>{editHolding?"Save Changes":"Add Holding"}</button></MA>
+        <MA><button className="btnc" onClick={()=>{setModal(null);setEditHolding(null);setForm(BF);setMfSearch("");setMfResults([]);setMfNav(null);setStockInfo(null);setEtfSearch("");setEtfResults([]);setEtfInfo(null);}}>Cancel</button><button className="btns" onClick={saveHolding} disabled={!form.name||!form.member_id}>{editHolding?"Save Changes":"Add Holding"}</button></MA>
       </Overlay>
     )}
 
@@ -1153,7 +1248,7 @@ ${alertLines||"  None"}`;
             if(h?.type==="US_STOCK") fetchUsdInr();
           }}>
             <option value="">Select holding…</option>
-            {holdings.filter(h=>["IN_STOCK","US_STOCK","MF"].includes(h.type)).map(h=>{
+            {holdings.filter(h=>["IN_STOCK","IN_ETF","US_STOCK","MF"].includes(h.type)).map(h=>{
               const mn=members.find(m=>m.id===h.member_id)?.name||"";
               return <option key={h.id} value={h.id}>{h.name}{mn?` (${mn})`:""}</option>;
             })}

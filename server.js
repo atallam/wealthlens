@@ -205,6 +205,34 @@ app.get("/api/forex/usdinr", auth, async (req, res) => {
   }
 });
 
+// ── ETF SEARCH — search NSE ETFs via Yahoo Finance ───────────────
+app.get("/api/etf/search", auth, async (req, res) => {
+  const q = req.query.q || "";
+  if (q.length < 2) return res.json([]);
+  try {
+    const url = `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(q)}&quotesCount=15&newsCount=0&listsCount=0`;
+    const response = await fetch(url, {
+      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" }
+    });
+    const data = await response.json();
+    const quotes = data?.quotes || [];
+    // Filter to ETFs listed on NSE (.NS suffix) or BSE (.BO suffix)
+    const etfs = quotes
+      .filter(q => q.quoteType === "ETF" && (q.symbol?.endsWith(".NS") || q.symbol?.endsWith(".BO") || q.exchange === "NSI" || q.exchange === "BSE"))
+      .slice(0, 8)
+      .map(q => ({
+        ticker:   q.symbol?.replace(/\.(NS|BO)$/, "") || q.symbol,
+        symbol:   q.symbol,
+        name:     q.longname || q.shortname || q.symbol,
+        exchange: q.exchange || "NSE",
+        type:     q.quoteType,
+      }));
+    res.json(etfs);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── STOCK NAME LOOKUP — fetch company name from Yahoo Finance ────
 app.get("/api/stock/info", auth, async (req, res) => {
   const { ticker, market } = req.query;
@@ -331,7 +359,7 @@ app.post("/api/prices/refresh", auth, async (req, res) => {
     if (h.type === "MF" && h.scheme_code) {
       const nav = await mfNav(h.scheme_code);
       if (nav) patch = { current_nav: nav, price_fetched_at: new Date().toISOString() };
-    } else if (h.type === "IN_STOCK" && h.ticker) {
+    } else if ((h.type === "IN_STOCK" || h.type === "IN_ETF") && h.ticker) {
       const price = await yahooPrice(`${h.ticker.toUpperCase()}.NS`);
       if (price) patch = { current_price: price, price_fetched_at: new Date().toISOString() };
     } else if (h.type === "US_STOCK" && h.ticker) {
