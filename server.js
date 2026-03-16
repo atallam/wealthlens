@@ -9,7 +9,7 @@ const app  = express();
 const PORT = process.env.PORT || 3000;
 
 // ── Fail fast if required env vars are missing ───────────────────
-const required = ["SUPABASE_URL", "SUPABASE_SERVICE_KEY"];
+const required = ["SUPABASE_URL", "SUPABASE_SERVICE_KEY", "ANTHROPIC_KEY"];
 const missing  = required.filter(k => !process.env[k]);
 if (missing.length) {
   console.error(`❌  Missing required environment variables: ${missing.join(", ")}`);
@@ -183,7 +183,26 @@ app.delete("/api/transactions/:id", auth, async (req, res) => {
   res.json({ ok: true });
 });
 
-// ── REAL-TIME PRICE FETCHING ──────────────────────────────────────
+// ── ANTHROPIC PROXY — all Claude API calls go through here ───────
+app.post("/api/ai/chat", auth, async (req, res) => {
+  const key = process.env.ANTHROPIC_KEY;
+  if (!key) return res.status(500).json({ error: "ANTHROPIC_KEY not set on server" });
+  try {
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type":    "application/json",
+        "x-api-key":       key,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify(req.body),
+    });
+    const data = await response.json();
+    res.json(data);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 // Yahoo Finance (server-side to bypass CORS)
 async function yahooPrice(symbol) {
   try {

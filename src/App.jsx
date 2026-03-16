@@ -544,23 +544,19 @@ ${alertLines||"  None"}`;
     const history = [...aiMessages, userMsg].map(m=>({role:m.role, content:m.content}));
 
     try{
-      const res = await fetch("https://api.anthropic.com/v1/messages",{
-        method:"POST",
-        headers:{"Content-Type":"application/json","x-api-key":import.meta.env.VITE_ANTHROPIC_KEY||"","anthropic-version":"2023-06-01"},
-        body:JSON.stringify({
-          model:"claude-sonnet-4-20250514",
-          max_tokens:1000,
-          system:`You are a private wealth advisor assistant for an Indian family portfolio management app called WealthLens. You have access to the family's complete, real portfolio data below. Answer questions about their portfolio directly and specifically — use actual numbers, names, and holdings from the data. Be concise and conversational. Use ₹ for values, Indian number formatting (Cr, L). Do not give generic financial advice — always refer to their specific holdings and numbers.
-
-${portfolioCtx}`,
+      const data = await api("/api/ai/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 1000,
+          system: `You are a private wealth advisor assistant for an Indian family portfolio management app called WealthLens. You have access to the family's complete, real portfolio data below. Answer questions about their portfolio directly and specifically — use actual numbers, names, and holdings from the data. Be concise and conversational. Use ₹ for values, Indian number formatting (Cr, L). Do not give generic financial advice — always refer to their specific holdings and numbers.\n\n${portfolioCtx}`,
           messages: history,
         })
       });
-      const data = await res.json();
       const reply = data.content?.find(c=>c.type==="text")?.text || "Sorry, I couldn't process that.";
       setAiMessages(p=>[...p, {role:"assistant", content:reply, ts:new Date()}]);
     }catch(e){
-      setAiMessages(p=>[...p, {role:"assistant", content:"Something went wrong. Check your Anthropic API key.", ts:new Date()}]);
+      setAiMessages(p=>[...p, {role:"assistant", content:"Something went wrong: "+e.message, ts:new Date()}]);
     }
     setAiLoading(false);
     setTimeout(()=>aiBottomRef.current?.scrollIntoView({behavior:"smooth"}),50);
@@ -602,14 +598,17 @@ ${portfolioCtx}`,
     const mSum=members.map(m=>{const hs=holdings.filter(h=>h.member_id===m.id);const c=hs.reduce((s,h)=>s+getVal(h),0),i=hs.reduce((s,h)=>s+getInv(h),0);return{...m,cur:c,inv:i,pct:i>0?((c-i)/i)*100:0};});
     const ctx=`Portfolio: ${fmtCr(allCur)} | Invested: ${fmtCr(allInv)} | Gain: ${fmtCr(allCur-allInv)} (${allCur>0?((allCur-allInv)/allInv*100).toFixed(1):0}%)\nMembers: ${mSum.map(m=>`${m.name}: ${fmtCr(m.cur)} (${m.pct.toFixed(1)}%)`).join("; ")}\nAllocation: ${byTA.map(x=>`${x.label}: ${fmtCr(x.v)} (${x.pct.toFixed(1)}%)`).join(", ")}\nGoals: ${goals.map(g=>`${g.name}: target ${fmtCr(g.targetAmount)} by ${g.targetDate}`).join("; ")}`;
     try{
-      const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",
-        headers:{"Content-Type":"application/json","x-api-key":import.meta.env.VITE_ANTHROPIC_KEY||"","anthropic-version":"2023-06-01"},
-        body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:900,
-          system:"You are a private wealth advisor. Write exactly 4 short paragraphs reviewing this Indian family portfolio: (1) overall health, (2) allocation quality, (3) goal progress, (4) recommendations. Use INR values. Plain text only.",
-          messages:[{role:"user",content:ctx}]})});
-      const data=await res.json();
-      setPdfState({loading:false,summary:data.content?.find(c=>c.type==="text")?.text||""});
-    }catch{ setPdfState({loading:false,summary:"AI summary unavailable."}); }
+      const data = await api("/api/ai/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 900,
+          system: "You are a private wealth advisor. Write exactly 4 short paragraphs reviewing this Indian family portfolio: (1) overall health, (2) allocation quality, (3) goal progress, (4) recommendations. Use INR values. Plain text only.",
+          messages: [{role:"user", content:ctx}]
+        })
+      });
+      setPdfState({loading:false, summary:data.content?.find(c=>c.type==="text")?.text||""});
+    }catch(e){ setPdfState({loading:false, summary:"AI summary unavailable: "+e.message}); }
   }
 
   // ── Derived data ──
