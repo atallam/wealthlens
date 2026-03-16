@@ -20,19 +20,22 @@ const PPF_R=7.1, EPF_R=8.15;
 function calcFD(p,r,s,mat){const start=new Date(s),now=new Date(),m=new Date(mat);const end=now<m?now:m;const y=Math.max(0,(end-start)/(864e5*365.25));return p*Math.pow(1+r/400,y*4);}
 function calcAccr(p,rate,s){const y=Math.max(0,(new Date()-new Date(s))/(864e5*365.25));return p*Math.pow(1+rate/100,y);}
 function getVal(h){
+  const units = h.net_units!=null ? h.net_units : (h.units||0);
   switch(h.type){
     case"FD":          return calcFD(h.principal,h.interest_rate,h.start_date,h.maturity_date);
     case"PPF":         return calcAccr(h.principal,PPF_R,h.start_date);
     case"EPF":         return calcAccr(h.principal,EPF_R,h.start_date);
-    case"MF":          return(h.units||0)*(h.current_nav||h.purchase_nav||0);
+    case"MF":          return units*(h.current_nav||h.purchase_nav||0);
     case"IN_STOCK":
-    case"IN_ETF":      return(h.units||0)*(h.current_price||h.purchase_price||0);
-    case"US_STOCK":    return(h.units||0)*(h.current_price||h.purchase_price||0)*(h.usd_inr_rate||83.2);
+    case"IN_ETF":      return units*(h.current_price||h.purchase_price||0);
+    case"US_STOCK":    return units*(h.current_price||h.purchase_price||0)*(h.usd_inr_rate||83.2);
     case"REAL_ESTATE": return h.current_value||h.purchase_value||0;
     default:           return h.principal||0;
   }
 }
 function getInv(h){
+  // If transactions exist, avg_cost is already in INR (price field stores INR)
+  if(h.avg_cost!=null && h.net_units!=null) return h.net_units * h.avg_cost;
   switch(h.type){
     case"MF":          return(h.units||0)*(h.purchase_nav||0);
     case"IN_STOCK":
@@ -822,6 +825,7 @@ ${alertLines||"  None"}`;
               <table className="ht">
                 <thead><tr>
                   <th>Asset</th><th>Ticker / Code</th><th>Type</th><th>Member</th>
+                  <th className="r">Units</th><th className="r">Avg Price</th>
                   <th className="r">Invested</th><th className="r">Current</th>
                   <th className="r">Gain</th><th className="r">Return</th><th className="r">XIRR</th>
                   <th className="r">Price source</th><th/>
@@ -832,7 +836,19 @@ ${alertLines||"  None"}`;
                     const xr=getXIRR(h);const a=AT[h.type];
                     const mn=members.find(m=>m.id===h.member_id)?.name||"";
                     const isLive=!!h.price_fetched_at;
-                    const artCount=(h.artifacts||[]).length;
+                    // Units and avg price — use transaction-computed values if available
+                    const units   = h.net_units ?? h.units ?? null;
+                    const avgCost = h.avg_cost  ?? h.purchase_price ?? h.purchase_nav ?? null;
+                    const fx      = h.usd_inr_rate || 83.2;
+                    const isUS    = h.type === "US_STOCK";
+                    // For US stocks show both USD and INR avg price
+                    const avgDisplay = avgCost
+                      ? isUS
+                        ? <><div style={{fontFamily:"'DM Mono',monospace",fontSize:".75rem",color:"rgba(232,224,208,.7)"}}>₹{(avgCost).toLocaleString("en-IN",{maximumFractionDigits:0})}</div><div style={{fontFamily:"'DM Mono',monospace",fontSize:".65rem",color:"rgba(232,224,208,.35)"}}>${(avgCost/fx).toFixed(2)}</div></>
+                        : h.type==="MF"
+                          ? <span style={{fontFamily:"'DM Mono',monospace",fontSize:".75rem",color:"rgba(232,224,208,.7)"}}>₹{avgCost.toFixed(4)}</span>
+                          : <span style={{fontFamily:"'DM Mono',monospace",fontSize:".75rem",color:"rgba(232,224,208,.7)"}}>₹{avgCost.toLocaleString("en-IN",{maximumFractionDigits:2})}</span>
+                      : <span style={{color:"rgba(232,224,208,.25)"}}>—</span>;
                     return(
                       <tr key={h.id}>
                         <td>
@@ -849,8 +865,17 @@ ${alertLines||"  None"}`;
                         </td>
                         <td><span className="tbadge2" style={{background:a.color+"22",color:a.color}}>{a.icon} {a.label}</span></td>
                         <td className="dim">{mn}</td>
+                        <td className="r">
+                          {units!=null
+                            ? <span style={{fontFamily:"'DM Mono',monospace",fontSize:".75rem",color:"rgba(232,224,208,.7)"}}>{Number(units).toLocaleString("en-IN",{maximumFractionDigits:4})}</span>
+                            : <span style={{color:"rgba(232,224,208,.25)"}}>—</span>}
+                        </td>
+                        <td className="r">{avgDisplay}</td>
                         <td className="r mono dim">{fmt(inv)}</td>
-                        <td className="r mono" style={{fontWeight:500}}>{fmt(cur)}</td>
+                        <td className="r mono" style={{fontWeight:500}}>
+                          {fmt(cur)}
+                          {isUS&&h.current_price&&<div style={{fontSize:".65rem",color:"rgba(232,224,208,.35)",fontFamily:"'DM Mono',monospace"}}>${h.current_price.toFixed(2)}</div>}
+                        </td>
                         <td className={`r mono${g>=0?" gain":" loss"}`}>{g>=0?"+":""}{fmt(g)}</td>
                         <td className={`r mono${p>=0?" gain":" loss"}`}>{fmtPct(p)}</td>
                         <td className="r mono" style={{color:xr!=null&&xr>12?"#4caf9a":xr!=null?"#e07c5a":"rgba(232,224,208,.28)"}}>{xr!=null?xr.toFixed(1)+"%":"—"}</td>
