@@ -183,6 +183,43 @@ app.delete("/api/transactions/:id", auth, async (req, res) => {
   res.json({ ok: true });
 });
 
+// ── FOREX RATE — live USD/INR ─────────────────────────────────────
+app.get("/api/forex/usdinr", auth, async (req, res) => {
+  try {
+    const price = await yahooPrice("USDINR=X");
+    if (!price) return res.json({ rate: 83.2, source: "fallback" });
+    res.json({ rate: price, source: "yahoo", fetched_at: new Date().toISOString() });
+  } catch (e) {
+    res.json({ rate: 83.2, source: "fallback" });
+  }
+});
+
+// ── STOCK NAME LOOKUP — fetch company name from Yahoo Finance ────
+app.get("/api/stock/info", auth, async (req, res) => {
+  const { ticker, market } = req.query;
+  if (!ticker) return res.status(400).json({ error: "ticker required" });
+  const symbol = market === "IN" ? `${ticker.toUpperCase()}.NS` : ticker.toUpperCase();
+  try {
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1d`;
+    const response = await fetch(url, {
+      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" }
+    });
+    const data = await response.json();
+    const meta = data?.chart?.result?.[0]?.meta;
+    if (!meta) return res.json({ found: false });
+    res.json({
+      found:        true,
+      name:         meta.longName || meta.shortName || "",
+      price:        meta.regularMarketPrice || null,
+      currency:     meta.currency || "",
+      exchange:     meta.exchangeName || "",
+      symbol:       meta.symbol || symbol,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── MF SEARCH — proxy to mfapi.in ────────────────────────────────
 app.get("/api/mf/search", auth, async (req, res) => {
   const q = req.query.q || "";

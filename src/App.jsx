@@ -52,7 +52,7 @@ const fmtSize=b=>b>1e6?`${(b/1e6).toFixed(1)}MB`:b>1e3?`${(b/1e3).toFixed(0)}KB`
 // Holding form — instrument details only, no transaction data
 const BF={member_id:"",type:"IN_STOCK",name:"",ticker:"",scheme_code:"",interest_rate:"",start_date:"",maturity_date:"",purchase_value:"",current_value:"",principal:"",usd_inr_rate:"83.2"};
 // Transaction form
-const BT={holding_id:"",txn_type:"BUY",units:"",price:"",txn_date:new Date().toISOString().slice(0,10),notes:""};
+const BT={holding_id:"",txn_type:"BUY",units:"",price:"",price_usd:"",txn_date:new Date().toISOString().slice(0,10),notes:""};
 const BG={name:"",targetAmount:"",targetDate:"",linkedMember:"all",category:"Retirement",color:"#c9a84c",notes:""};
 const BA={type:"ALLOCATION_DRIFT",assetType:"IN_STOCK",threshold:"",label:"",active:true};
 
@@ -325,7 +325,12 @@ export default function App() {
   const [mfResults,      setMfResults]      = useState([]);
   const [mfSearching,    setMfSearching]    = useState(false);
   const [mfNav,          setMfNav]          = useState(null); // {nav, date, fund_house, scheme_category}
-  const mfSearchTimer = useRef();
+  const [stockInfo,      setStockInfo]      = useState(null); // {name, price, exchange, found}
+  const [stockLooking,   setStockLooking]   = useState(false);
+  const [usdInrRate,     setUsdInrRate]     = useState(83.2);
+  const [usdInrLoading,  setUsdInrLoading]  = useState(false);
+  const mfSearchTimer  = useRef();
+  const stockLookTimer = useRef();
   const [aiMessages,     setAiMessages]     = useState([]); // {role, content, ts}
   const [aiInput,        setAiInput]        = useState("");
   const [aiLoading,      setAiLoading]      = useState(false);
@@ -499,7 +504,36 @@ export default function App() {
     }catch{ setMfNav(null); }
   }
 
-  // ── Build rich portfolio context for AI ──────────────────────────
+  // ── Stock ticker lookup ──────────────────────────────────────────
+  function handleTickerChange(ticker, market){
+    setStockInfo(null);
+    setForm(f=>({...f, ticker:ticker.toUpperCase()}));
+    clearTimeout(stockLookTimer.current);
+    if(ticker.length < 1){ setStockLooking(false); return; }
+    setStockLooking(true);
+    stockLookTimer.current = setTimeout(async()=>{
+      try{
+        const info = await api(`/api/stock/info?ticker=${encodeURIComponent(ticker)}&market=${market}`);
+        setStockInfo(info);
+        if(info.found && info.name){
+          setForm(f=>({...f, name: f.name && f.name !== ticker.toUpperCase() ? f.name : info.name}));
+        }
+      }catch{ setStockInfo({found:false}); }
+      setStockLooking(false);
+    }, 600);
+  }
+
+  // ── Fetch live USD/INR rate ──────────────────────────────────────
+  async function fetchUsdInr(){
+    setUsdInrLoading(true);
+    try{
+      const data = await api("/api/forex/usdinr");
+      const rate = data.rate || 83.2;
+      setUsdInrRate(rate);
+      setForm(f=>({...f, usd_inr_rate: rate.toFixed(2)}));
+    }catch{ /* keep existing rate */ }
+    setUsdInrLoading(false);
+  }
   function buildPortfolioContext(){
     const allCurCtx  = holdings.reduce((s,h)=>s+getVal(h),0);
     const allInvCtx  = holdings.reduce((s,h)=>s+getInv(h),0);
@@ -945,18 +979,87 @@ ${alertLines||"  None"}`;
 
     {/* MODALS */}
     {modal==="holding"&&(
-      <Overlay onClose={()=>{setModal(null);setEditHolding(null);setForm(BF);setMfSearch("");setMfResults([]);setMfNav(null);}}>
+      <Overlay onClose={()=>{setModal(null);setEditHolding(null);setForm(BF);setMfSearch("");setMfResults([]);setMfNav(null);setStockInfo(null);}}>
         <div className="modtitle">{editHolding?"Edit":"Add"} Holding</div>
         <div style={{fontSize:".75rem",color:"rgba(232,224,208,.38)",marginBottom:"1rem",lineHeight:1.6}}>
           {editHolding?"Update instrument details below.":"Register the instrument. Transactions (buy/sell) are added separately via the + Transaction button."}
         </div>
         <div className="frow">
           <FG label="Member"><select className="fi fs" value={form.member_id} onChange={e=>setForm(f=>({...f,member_id:e.target.value}))}><option value="">Select</option>{members.map(m=><option key={m.id} value={m.id}>{m.name}</option>)}</select></FG>
-          <FG label="Asset Type"><select className="fi fs" value={form.type} onChange={e=>setForm(f=>({...f,type:e.target.value}))}>{Object.entries(AT).map(([k,v])=><option key={k} value={k}>{v.icon} {v.label}</option>)}</select></FG>
+          <FG label="Asset Type"><select className="fi fs" value={form.type} onChange={e=>{setForm(f=>({...f,type:e.target.value}));setStockInfo(null);if(e.target.value==="US_STOCK")fetchUsdInr();}}>{Object.entries(AT).map(([k,v])=><option key={k} value={k}>{v.icon} {v.label}</option>)}</select></FG>
         </div>
         <FG label="Name"><input className="fi" placeholder="e.g. Reliance Industries" value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))}/></FG>
-        {form.type==="IN_STOCK"&&<FG label="NSE Ticker (for live prices)"><input className="fi" placeholder="e.g. RELIANCE" value={form.ticker||""} onChange={e=>setForm(f=>({...f,ticker:e.target.value.toUpperCase()}))}/></FG>}
-        {form.type==="US_STOCK"&&<div className="frow"><FG label="US Ticker"><input className="fi" placeholder="e.g. AAPL" value={form.ticker||""} onChange={e=>setForm(f=>({...f,ticker:e.target.value.toUpperCase()}))}/></FG><FG label="USD/INR Rate"><input type="number" className="fi" value={form.usd_inr_rate} onChange={e=>setForm(f=>({...f,usd_inr_rate:e.target.value}))}/></FG></div>}
+        {form.type==="IN_STOCK"&&(
+          <div style={{marginBottom:".85rem"}}>
+            <label className="flbl">NSE Ticker (for live prices)</label>
+            <div style={{position:"relative"}}>
+              <input className="fi" placeholder="e.g. RELIANCE, HDFCBANK, TCS"
+                value={form.ticker||""}
+                onChange={e=>handleTickerChange(e.target.value,"IN")}
+              />
+              {stockLooking&&<div style={{position:"absolute",right:".7rem",top:"50%",transform:"translateY(-50%)",fontSize:".7rem",color:"rgba(232,224,208,.4)"}}>Looking up…</div>}
+            </div>
+            {stockInfo&&stockInfo.found&&(
+              <div style={{marginTop:".5rem",padding:".6rem .85rem",background:"rgba(224,124,90,.07)",border:"1px solid rgba(224,124,90,.22)",borderRadius:7,fontSize:".75rem",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <div>
+                  <div style={{color:"#e07c5a",fontWeight:500}}>{stockInfo.name}</div>
+                  <div style={{color:"rgba(232,224,208,.38)",fontSize:".67rem"}}>{stockInfo.exchange} · {form.ticker}.NS</div>
+                </div>
+                {stockInfo.price&&<div style={{fontFamily:"'DM Mono',monospace",color:"#c9a84c",fontSize:".9rem"}}>₹{stockInfo.price.toLocaleString("en-IN",{maximumFractionDigits:2})}</div>}
+              </div>
+            )}
+            {stockInfo&&!stockInfo.found&&form.ticker&&!stockLooking&&(
+              <div style={{marginTop:".5rem",fontSize:".72rem",color:"rgba(224,124,90,.6)"}}>⚠ Ticker not found on NSE — check spelling</div>
+            )}
+          </div>
+        )}
+        {form.type==="US_STOCK"&&(
+          <div style={{marginBottom:".85rem"}}>
+            <div className="frow">
+              <div>
+                <label className="flbl">US Ticker</label>
+                <div style={{position:"relative"}}>
+                  <input className="fi" placeholder="e.g. AAPL, NVDA, MSFT"
+                    value={form.ticker||""}
+                    onChange={e=>handleTickerChange(e.target.value,"US")}
+                  />
+                  {stockLooking&&<div style={{position:"absolute",right:".7rem",top:"50%",transform:"translateY(-50%)",fontSize:".7rem",color:"rgba(232,224,208,.4)"}}>Looking up…</div>}
+                </div>
+              </div>
+              <div>
+                <label className="flbl">USD/INR Rate</label>
+                <div style={{position:"relative"}}>
+                  <input type="number" className="fi" value={form.usd_inr_rate}
+                    onChange={e=>setForm(f=>({...f,usd_inr_rate:e.target.value}))}/>
+                  <button onClick={fetchUsdInr} disabled={usdInrLoading}
+                    style={{position:"absolute",right:".4rem",top:"50%",transform:"translateY(-50%)",background:"rgba(201,168,76,.15)",border:"1px solid rgba(201,168,76,.3)",color:"#c9a84c",borderRadius:4,padding:"2px 7px",cursor:"pointer",fontSize:".62rem",fontFamily:"'DM Sans',sans-serif"}}>
+                    {usdInrLoading?"…":"⟳ Live"}
+                  </button>
+                </div>
+                <div style={{fontSize:".65rem",color:"rgba(232,224,208,.3)",marginTop:".2rem"}}>
+                  1 USD = ₹{(+form.usd_inr_rate||83.2).toFixed(2)}
+                </div>
+              </div>
+            </div>
+            {stockInfo&&stockInfo.found&&(
+              <div style={{marginTop:".5rem",padding:".6rem .85rem",background:"rgba(90,156,224,.07)",border:"1px solid rgba(90,156,224,.22)",borderRadius:7,fontSize:".75rem",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <div>
+                  <div style={{color:"#5a9ce0",fontWeight:500}}>{stockInfo.name}</div>
+                  <div style={{color:"rgba(232,224,208,.38)",fontSize:".67rem"}}>{stockInfo.exchange} · {stockInfo.currency}</div>
+                </div>
+                {stockInfo.price&&(
+                  <div style={{textAlign:"right"}}>
+                    <div style={{fontFamily:"'DM Mono',monospace",color:"#c9a84c",fontSize:".9rem"}}>${stockInfo.price.toLocaleString("en-US",{maximumFractionDigits:2})}</div>
+                    <div style={{fontFamily:"'DM Mono',monospace",color:"rgba(232,224,208,.45)",fontSize:".72rem"}}>₹{(stockInfo.price*(+form.usd_inr_rate||83.2)).toLocaleString("en-IN",{maximumFractionDigits:0})}</div>
+                  </div>
+                )}
+              </div>
+            )}
+            {stockInfo&&!stockInfo.found&&form.ticker&&!stockLooking&&(
+              <div style={{marginTop:".5rem",fontSize:".72rem",color:"rgba(224,124,90,.6)"}}>⚠ Ticker not found — check spelling</div>
+            )}
+          </div>
+        )}
         {form.type==="MF"&&(
           <div style={{marginBottom:".85rem"}}>
             <label className="flbl">Search Mutual Fund</label>
@@ -1027,16 +1130,28 @@ ${alertLines||"  None"}`;
             ✓ After saving, "+ Transaction" will open automatically to record your first buy.
           </div>
         )}
-        <MA><button className="btnc" onClick={()=>{setModal(null);setEditHolding(null);setForm(BF);setMfSearch("");setMfResults([]);setMfNav(null);}}>Cancel</button><button className="btns" onClick={saveHolding} disabled={!form.name||!form.member_id}>{editHolding?"Save Changes":"Add Holding"}</button></MA>
+        <MA><button className="btnc" onClick={()=>{setModal(null);setEditHolding(null);setForm(BF);setMfSearch("");setMfResults([]);setMfNav(null);setStockInfo(null);}}>Cancel</button><button className="btns" onClick={saveHolding} disabled={!form.name||!form.member_id}>{editHolding?"Save Changes":"Add Holding"}</button></MA>
       </Overlay>
     )}
 
     {/* Global Add Transaction modal */}
-    {globalTxnModal&&(
+    {globalTxnModal&&(()=>{
+      const selHolding = holdings.find(h=>h.id===txnForm.holding_id);
+      const isUS = selHolding?.type==="US_STOCK";
+      const fxRate = +(selHolding?.usd_inr_rate||usdInrRate||83.2);
+      const priceUsd = isUS ? +txnForm.price_usd||0 : 0;
+      const priceInr = isUS ? priceUsd * fxRate : +txnForm.price||0;
+      const totalUsd = isUS ? priceUsd * +txnForm.units : 0;
+      const totalInr = isUS ? totalUsd * fxRate : +txnForm.price * +txnForm.units;
+      return (
       <Overlay onClose={()=>setGlobalTxnModal(false)}>
         <div className="modtitle">Add Transaction</div>
         <FG label="Holding">
-          <select className="fi fs" value={txnForm.holding_id} onChange={e=>setTxnForm(p=>({...p,holding_id:e.target.value}))}>
+          <select className="fi fs" value={txnForm.holding_id} onChange={e=>{
+            const h=holdings.find(x=>x.id===e.target.value);
+            setTxnForm(p=>({...p,holding_id:e.target.value,price:"",price_usd:""}));
+            if(h?.type==="US_STOCK") fetchUsdInr();
+          }}>
             <option value="">Select holding…</option>
             {holdings.filter(h=>["IN_STOCK","US_STOCK","MF"].includes(h.type)).map(h=>{
               const mn=members.find(m=>m.id===h.member_id)?.name||"";
@@ -1052,15 +1167,62 @@ ${alertLines||"  None"}`;
             </select>
           </FG>
           <FG label="Units"><input type="number" className="fi" placeholder="e.g. 50" value={txnForm.units} onChange={e=>setTxnForm(p=>({...p,units:e.target.value}))}/></FG>
-          <FG label="Price ₹ per unit"><input type="number" className="fi" placeholder="e.g. 2450" value={txnForm.price} onChange={e=>setTxnForm(p=>({...p,price:e.target.value}))}/></FG>
+          {isUS ? (
+            <FG label="Price $ per unit (USD)">
+              <input type="number" className="fi" placeholder="e.g. 189.50" value={txnForm.price_usd||""} onChange={e=>{
+                const usd = e.target.value;
+                const inr = usd ? (+usd * fxRate).toFixed(2) : "";
+                setTxnForm(p=>({...p, price_usd: usd, price: inr}));
+              }}/>
+            </FG>
+          ) : (
+            <FG label={selHolding?.type==="MF"?"NAV ₹ per unit":"Price ₹ per unit"}>
+              <input type="number" className="fi" placeholder="e.g. 2450" value={txnForm.price} onChange={e=>setTxnForm(p=>({...p,price:e.target.value}))}/>
+            </FG>
+          )}
         </div>
+        {/* USD/INR info row for US stocks */}
+        {isUS&&(
+          <div style={{display:"flex",alignItems:"center",gap:".75rem",marginBottom:".85rem",padding:".6rem .85rem",background:"rgba(90,156,224,.06)",border:"1px solid rgba(90,156,224,.2)",borderRadius:7}}>
+            <div style={{flex:1}}>
+              <div style={{fontSize:".68rem",color:"rgba(232,224,208,.38)",marginBottom:".25rem"}}>Exchange Rate</div>
+              <div style={{fontFamily:"'DM Mono',monospace",fontSize:".85rem",color:"#5a9ce0"}}>1 USD = ₹{fxRate.toFixed(2)}</div>
+            </div>
+            {txnForm.price_usd&&(
+              <div style={{flex:1}}>
+                <div style={{fontSize:".68rem",color:"rgba(232,224,208,.38)",marginBottom:".25rem"}}>Price in INR</div>
+                <div style={{fontFamily:"'DM Mono',monospace",fontSize:".85rem",color:"#c9a84c"}}>₹{priceInr.toLocaleString("en-IN",{maximumFractionDigits:2})}</div>
+              </div>
+            )}
+            <button onClick={fetchUsdInr} disabled={usdInrLoading}
+              style={{background:"rgba(90,156,224,.15)",border:"1px solid rgba(90,156,224,.3)",color:"#5a9ce0",borderRadius:4,padding:".3rem .7rem",cursor:"pointer",fontSize:".68rem",fontFamily:"'DM Sans',sans-serif",flexShrink:0}}>
+              {usdInrLoading?"…":"⟳ Refresh Rate"}
+            </button>
+          </div>
+        )}
         <div className="frow">
           <FG label="Date"><input type="date" className="fi" value={txnForm.txn_date} onChange={e=>setTxnForm(p=>({...p,txn_date:e.target.value}))}/></FG>
           <FG label="Notes (optional)"><input className="fi" placeholder="e.g. SIP, bonus, tax harvesting" value={txnForm.notes} onChange={e=>setTxnForm(p=>({...p,notes:e.target.value}))}/></FG>
         </div>
+        {/* Total value summary */}
         {txnForm.holding_id&&txnForm.units&&txnForm.price&&(
-          <div style={{fontSize:".75rem",color:"rgba(232,224,208,.45)",padding:".5rem .8rem",background:"rgba(255,255,255,.03)",borderRadius:6,marginBottom:".5rem"}}>
-            Total value: ₹{(+txnForm.units * +txnForm.price).toLocaleString("en-IN",{maximumFractionDigits:0})}
+          <div style={{padding:".65rem .9rem",background:"rgba(255,255,255,.03)",border:"1px solid rgba(255,255,255,.07)",borderRadius:7,marginBottom:".5rem",display:"flex",gap:"1.5rem",flexWrap:"wrap"}}>
+            {isUS&&totalUsd>0&&(
+              <div>
+                <div style={{fontSize:".62rem",letterSpacing:".08em",textTransform:"uppercase",color:"rgba(232,224,208,.3)",marginBottom:".2rem"}}>Total (USD)</div>
+                <div style={{fontFamily:"'DM Mono',monospace",fontSize:".9rem",color:"#5a9ce0"}}>${totalUsd.toLocaleString("en-US",{maximumFractionDigits:2})}</div>
+              </div>
+            )}
+            <div>
+              <div style={{fontSize:".62rem",letterSpacing:".08em",textTransform:"uppercase",color:"rgba(232,224,208,.3)",marginBottom:".2rem"}}>Total (INR)</div>
+              <div style={{fontFamily:"'DM Mono',monospace",fontSize:".9rem",color:"#c9a84c"}}>₹{totalInr.toLocaleString("en-IN",{maximumFractionDigits:0})}</div>
+            </div>
+            {isUS&&(
+              <div>
+                <div style={{fontSize:".62rem",letterSpacing:".08em",textTransform:"uppercase",color:"rgba(232,224,208,.3)",marginBottom:".2rem"}}>Rate used</div>
+                <div style={{fontFamily:"'DM Mono',monospace",fontSize:".85rem",color:"rgba(232,224,208,.45)"}}>₹{fxRate.toFixed(2)}</div>
+              </div>
+            )}
           </div>
         )}
         <MA>
@@ -1068,7 +1230,8 @@ ${alertLines||"  None"}`;
           <button className="btns" onClick={addTransaction} disabled={!txnForm.holding_id||!txnForm.units||!txnForm.price||!txnForm.txn_date}>Save Transaction</button>
         </MA>
       </Overlay>
-    )}
+      );
+    })()}
 
     {/* Inline transaction history panel (opened from 📋 button on holding row) */}
     {txnHolding&&<TransactionPanel holding={txnHolding} txnForm={txnForm} setTxnForm={setTxnForm} onAddTxn={addTransaction} onDeleteTxn={deleteTransaction} onClose={()=>setTxnHolding(null)}/>}
