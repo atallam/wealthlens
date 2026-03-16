@@ -169,10 +169,21 @@ app.get("/api/transactions/:holdingId", auth, async (req, res) => {
 });
 
 app.post("/api/transactions", auth, async (req, res) => {
-  const { error } = await supabase.from("transactions").insert({
+  // price_usd is stored separately — extract it before insert
+  const { price_usd, ...txnData } = req.body;
+  const payload = {
     id: "t_" + Date.now() + Math.random().toString(36).slice(2,6),
-    ...req.body,
-  });
+    ...txnData,
+    ...(price_usd ? { price_usd: Number(price_usd) } : {}),
+  };
+  const { error } = await supabase.from("transactions").insert(payload);
+  // If price_usd column doesn't exist yet, retry without it
+  if (error && error.message?.includes("price_usd")) {
+    const { price_usd: _drop, ...safePayload } = payload;
+    const { error: e2 } = await supabase.from("transactions").insert(safePayload);
+    if (e2) return res.status(500).json({ error: e2.message });
+    return res.json({ ok: true });
+  }
   if (error) return res.status(500).json({ error: error.message });
   res.json({ ok: true });
 });
