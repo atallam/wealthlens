@@ -451,8 +451,6 @@ export default function App() {
     }catch(e){ alert("Save failed: "+e.message); }
   }
 
-  const txnSaving = useRef(false); // prevents double-submit
-
   async function addTransaction(){
     if(!txnForm.holding_id){ alert("Select a holding"); return; }
     if(!txnForm.units||!txnForm.price||!txnForm.txn_date){ alert("Fill in units, price, and date"); return; }
