@@ -1059,6 +1059,7 @@ ${alertLines||"  None"}`;
 
   // ── Derived data ──
   const allCur=holdings.reduce((s,h)=>s+getVal(h),0);
+  const allInv=holdings.reduce((s,h)=>s+getInv(h),0);
   const visH=holdings.filter(h=>selMember==="all"||h.member_id===selMember).filter(h=>filterType==="ALL"||h.type===filterType);
   const totCur=visH.reduce((s,h)=>s+getVal(h),0);
   const totInv=visH.reduce((s,h)=>s+getInv(h),0);
@@ -1903,7 +1904,7 @@ ${alertLines||"  None"}`;
       </Overlay>
     )}
 
-    <GoalPlanModal open={modal==="goalplan"} onClose={()=>setModal(null)} goals={goals} members={members} holdings={holdings} allCur={allCur} allInv={allInv} getVal={getVal} fmtCr={fmtCr} fmt={fmt} fmtPct={fmtPct}/>
+    <GoalPlanModal open={modal==="goalplan"} onClose={()=>setModal(null)} goals={goals} members={members} holdings={holdings} allCur={allCur} allInv={allInv}/>
     {modal==="alert"&&(<Overlay onClose={()=>setModal(null)} narrow><div className="modtitle">New Alert Rule</div><FG label="Alert Type"><select className="fi fs" value={alertForm.type} onChange={e=>setAlertForm(p=>({...p,type:e.target.value}))}><option value="ALLOCATION_DRIFT">Over-weight</option><option value="CONCENTRATION">Under-weight</option><option value="RETURN_TARGET">Return below target</option></select></FG>{alertForm.type!=="RETURN_TARGET"&&<FG label="Asset Class"><select className="fi fs" value={alertForm.assetType} onChange={e=>setAlertForm(p=>({...p,assetType:e.target.value}))}>{Object.entries(AT).map(([k,v])=><option key={k} value={k}>{v.icon} {v.label}</option>)}</select></FG>}<FG label={alertForm.type==="RETURN_TARGET"?"Target Return %":"Threshold %"}><input type="number" className="fi" value={alertForm.threshold} onChange={e=>setAlertForm(p=>({...p,threshold:e.target.value}))}/></FG><FG label="Description"><input className="fi" value={alertForm.label} onChange={e=>setAlertForm(p=>({...p,label:e.target.value}))}/></FG><MA><button className="btnc" onClick={()=>setModal(null)}>Cancel</button><button className="btns" onClick={addAlert} disabled={!alertForm.threshold||!alertForm.label}>Add Alert</button></MA></Overlay>)}
     {modal==="csv"&&(<Overlay onClose={()=>setModal(null)} wide><div className="modtitle">Preview — {csvPreview.length} Holdings</div><div style={{overflowX:"auto",maxHeight:300,overflowY:"auto"}}><table className="ht" style={{fontSize:".73rem"}}><thead><tr><th>Name</th><th>Type</th><th>Ticker/Code</th><th>Member</th><th className="r">Invested</th></tr></thead><tbody>{csvPreview.map((h,i)=>{const inv=getInv(h);return<tr key={i}><td>{h.name}</td><td><span className="tbadge2" style={{background:AT[h.type]?.color+"22",color:AT[h.type]?.color}}>{AT[h.type]?.icon} {AT[h.type]?.label||h.type}</span></td><td className="mono dim">{h.ticker||h.scheme_code||"—"}</td><td className="dim">{members.find(m=>m.id===h.member_id)?.name||"—"}</td><td className="r mono dim">{fmt(inv)}</td></tr>;})}</tbody></table></div><MA><button className="btnc" onClick={()=>setModal(null)}>Cancel</button><button className="btns" onClick={importCSV}>Import All</button></MA></Overlay>)}
     {modal==="pdf"&&(<Overlay onClose={()=>setModal(null)}><div className="modtitle">Portfolio Report</div>{pdfState.loading?(<div style={{textAlign:"center",padding:"2.5rem 0"}}><div style={{width:34,height:34,border:"2px solid rgba(201,168,76,.2)",borderTopColor:"#c9a84c",borderRadius:"50%",animation:"spin 1s linear infinite",margin:"0 auto 1rem"}}/><div style={{fontSize:".8rem",color:"rgba(232,224,208,.38)"}}>Generating AI commentary…</div><style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style></div>):(<><div style={{fontSize:".68rem",letterSpacing:".1em",textTransform:"uppercase",color:"#c9a84c",marginBottom:".7rem"}}>AI Advisor Commentary</div><div style={{background:"rgba(201,168,76,.05)",border:"1px solid rgba(201,168,76,.14)",borderRadius:8,padding:"1rem 1.2rem",fontSize:".8rem",lineHeight:1.72,color:"rgba(232,224,208,.7)",maxHeight:260,overflowY:"auto",whiteSpace:"pre-wrap"}}>{pdfState.summary}</div></>)}<MA><button className="btnc" onClick={()=>setModal(null)}>Close</button></MA></Overlay>)}
@@ -1911,11 +1912,10 @@ ${alertLines||"  None"}`;
   );
 }
 
-function GoalPlanModal({open,onClose,goals,members,holdings,allCur,allInv,getVal,fmtCr,fmt,fmtPct}){
-  const {useState:S,useEffect:E} = {useState,useEffect};
-  const [loading,setLoading] = S(false);
-  const [plan,setPlan]       = S("");
-  const [error,setError]     = S("");
+function GoalPlanModal({open,onClose,goals,members,holdings,allCur,allInv}){
+  const [loading,setLoading] = useState(false);
+  const [plan,setPlan]       = useState("");
+  const [error,setError]     = useState("");
 
   function goalCurVal(g){
     const lm=g.linkedMembers||["all"];
@@ -1923,7 +1923,7 @@ function GoalPlanModal({open,onClose,goals,members,holdings,allCur,allInv,getVal
     return holdings.reduce((s,h)=>lm.includes(h.member_id)?s+getVal(h):s,0);
   }
 
-  E(()=>{
+  useEffect(()=>{
     if(!open) return;
     setPlan(""); setError("");
     generate();
