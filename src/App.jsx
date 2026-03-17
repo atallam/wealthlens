@@ -349,6 +349,7 @@ export default function App() {
 
   const csvRef   = useRef();
   const saveTimer = useRef(null);
+  const txnSaving = useRef(false);
 
   // ── Auth listener ──
   useEffect(()=>{
@@ -450,20 +451,30 @@ export default function App() {
     }catch(e){ alert("Save failed: "+e.message); }
   }
 
+  const txnSaving = useRef(false); // prevents double-submit
+
   async function addTransaction(){
     if(!txnForm.holding_id){ alert("Select a holding"); return; }
     if(!txnForm.units||!txnForm.price||!txnForm.txn_date){ alert("Fill in units, price, and date"); return; }
+    if(txnSaving.current) return;
+    txnSaving.current = true;
     try{
       await api("/api/transactions",{method:"POST",body:JSON.stringify({
-        ...txnForm, units:+txnForm.units, price:+txnForm.price
+        holding_id: txnForm.holding_id,
+        txn_type:   txnForm.txn_type,
+        units:      +txnForm.units,
+        price:      +txnForm.price,
+        price_usd:  txnForm.price_usd ? +txnForm.price_usd : undefined,
+        txn_date:   txnForm.txn_date,
+        notes:      txnForm.notes||"",
       })});
       const hlds = await api("/api/holdings");
       setHoldings(hlds||[]);
-      // If open from the inline panel, refresh that holding too
       if(txnHolding) setTxnHolding(hlds.find(h=>h.id===txnHolding.id)||null);
       setTxnForm(BT);
       setGlobalTxnModal(false);
     }catch(e){ alert("Failed: "+e.message); }
+    finally{ txnSaving.current = false; }
   }
 
   async function deleteTransaction(txnId, holdingId){
@@ -826,7 +837,8 @@ ${alertLines||"  None"}`;
                 <thead><tr>
                   <th>Asset</th><th>Ticker / Code</th><th>Type</th><th>Member</th>
                   <th className="r">Units</th><th className="r">Avg Price</th>
-                  <th className="r">Invested</th><th className="r">Current</th>
+                  <th className="r">Cur. Price</th>
+                  <th className="r">Invested</th><th className="r">Current Value</th>
                   <th className="r">Gain</th><th className="r">Return</th><th className="r">XIRR</th>
                   <th className="r">Price source</th><th/>
                 </tr></thead>
@@ -836,19 +848,36 @@ ${alertLines||"  None"}`;
                     const xr=getXIRR(h);const a=AT[h.type];
                     const mn=members.find(m=>m.id===h.member_id)?.name||"";
                     const isLive=!!h.price_fetched_at;
-                    // Units and avg price — use transaction-computed values if available
                     const units   = h.net_units ?? h.units ?? null;
                     const avgCost = h.avg_cost  ?? h.purchase_price ?? h.purchase_nav ?? null;
                     const fx      = h.usd_inr_rate || 83.2;
                     const isUS    = h.type === "US_STOCK";
-                    // For US stocks show both USD and INR avg price
+
+                    // Avg price display
                     const avgDisplay = avgCost
                       ? isUS
-                        ? <><div style={{fontFamily:"'DM Mono',monospace",fontSize:".75rem",color:"rgba(232,224,208,.7)"}}>₹{(avgCost).toLocaleString("en-IN",{maximumFractionDigits:0})}</div><div style={{fontFamily:"'DM Mono',monospace",fontSize:".65rem",color:"rgba(232,224,208,.35)"}}>${(avgCost/fx).toFixed(2)}</div></>
+                        ? <><div style={{fontFamily:"'DM Mono',monospace",fontSize:".75rem",color:"rgba(232,224,208,.7)"}}>₹{avgCost.toLocaleString("en-IN",{maximumFractionDigits:0})}</div><div style={{fontFamily:"'DM Mono',monospace",fontSize:".65rem",color:"rgba(232,224,208,.35)"}}>${(avgCost/fx).toFixed(2)}</div></>
                         : h.type==="MF"
-                          ? <span style={{fontFamily:"'DM Mono',monospace",fontSize:".75rem",color:"rgba(232,224,208,.7)"}}>₹{avgCost.toFixed(4)}</span>
-                          : <span style={{fontFamily:"'DM Mono',monospace",fontSize:".75rem",color:"rgba(232,224,208,.7)"}}>₹{avgCost.toLocaleString("en-IN",{maximumFractionDigits:2})}</span>
+                          ? <span style={{fontFamily:"'DM Mono',monospace",fontSize:".75rem",color:"rgba(232,224,208,.7)"}}>₹{Number(avgCost).toFixed(4)}</span>
+                          : <span style={{fontFamily:"'DM Mono',monospace",fontSize:".75rem",color:"rgba(232,224,208,.7)"}}>₹{Number(avgCost).toLocaleString("en-IN",{maximumFractionDigits:2})}</span>
                       : <span style={{color:"rgba(232,224,208,.25)"}}>—</span>;
+
+                    // Current price per unit display
+                    const cpUsd = isUS ? h.current_price : null;
+                    const cpInr = isUS
+                      ? (h.current_price ? h.current_price * fx : null)
+                      : (h.type==="MF" ? (h.current_nav||h.purchase_nav||null) : (h.current_price||h.purchase_price||null));
+                    const curPriceDisplay = (cpUsd||cpInr)
+                      ? isUS
+                        ? cpUsd
+                          ? <><div style={{fontFamily:"'DM Mono',monospace",fontSize:".75rem",color:"#e8e0d0"}}>${cpUsd.toFixed(2)}</div><div style={{fontFamily:"'DM Mono',monospace",fontSize:".65rem",color:"rgba(232,224,208,.45)"}}>₹{(cpUsd*fx).toLocaleString("en-IN",{maximumFractionDigits:0})}</div></>
+                          : <span style={{color:"rgba(232,224,208,.25)"}}>—</span>
+                        : h.type==="MF"
+                          ? <span style={{fontFamily:"'DM Mono',monospace",fontSize:".75rem",color:"#e8e0d0"}}>₹{Number(cpInr).toFixed(4)}</span>
+                          : cpInr ? <span style={{fontFamily:"'DM Mono',monospace",fontSize:".75rem",color:"#e8e0d0"}}>₹{Number(cpInr).toLocaleString("en-IN",{maximumFractionDigits:2})}</span>
+                          : <span style={{color:"rgba(232,224,208,.25)"}}>—</span>
+                      : <span style={{color:"rgba(232,224,208,.25)"}}>—</span>;
+
                     return(
                       <tr key={h.id}>
                         <td>
@@ -871,11 +900,9 @@ ${alertLines||"  None"}`;
                             : <span style={{color:"rgba(232,224,208,.25)"}}>—</span>}
                         </td>
                         <td className="r">{avgDisplay}</td>
+                        <td className="r">{curPriceDisplay}</td>
                         <td className="r mono dim">{fmt(inv)}</td>
-                        <td className="r mono" style={{fontWeight:500}}>
-                          {fmt(cur)}
-                          {isUS&&h.current_price&&<div style={{fontSize:".65rem",color:"rgba(232,224,208,.35)",fontFamily:"'DM Mono',monospace"}}>${h.current_price.toFixed(2)}</div>}
-                        </td>
+                        <td className="r mono" style={{fontWeight:500}}>{fmt(cur)}</td>
                         <td className={`r mono${g>=0?" gain":" loss"}`}>{g>=0?"+":""}{fmt(g)}</td>
                         <td className={`r mono${p>=0?" gain":" loss"}`}>{fmtPct(p)}</td>
                         <td className="r mono" style={{color:xr!=null&&xr>12?"#4caf9a":xr!=null?"#e07c5a":"rgba(232,224,208,.28)"}}>{xr!=null?xr.toFixed(1)+"%":"—"}</td>
@@ -884,7 +911,9 @@ ${alertLines||"  None"}`;
                             ?<span style={{fontSize:".62rem",background:"rgba(76,175,154,.12)",color:"#4caf9a",padding:"2px 6px",borderRadius:3,border:"1px solid rgba(76,175,154,.25)"}}>● Live · {ago(h.price_fetched_at)}</span>
                             :(h.type==="FD"||h.type==="PPF"||h.type==="EPF")
                               ?<span style={{fontSize:".62rem",color:"rgba(232,224,208,.3)"}}>Auto-calc</span>
-                              :<span style={{fontSize:".62rem",color:"rgba(232,224,208,.28)"}}>Manual</span>
+                              :h.type==="US_STOCK"
+                                ?<span title="Add ticker and click Live Prices" style={{fontSize:".62rem",color:"rgba(224,124,90,.7)",cursor:"help"}}>⚠ Add ticker for live</span>
+                                :<span style={{fontSize:".62rem",color:"rgba(232,224,208,.28)"}}>Manual</span>
                           }
                         </td>
                         <td>
