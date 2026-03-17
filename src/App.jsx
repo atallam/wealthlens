@@ -105,7 +105,7 @@ function LoginScreen({ error }) {
 /* ══════════════════════════════════════════════
    TRANSACTION PANEL (per holding)
 ══════════════════════════════════════════════ */
-function TransactionPanel({ holding, onAddTxn, onDeleteTxn, txnForm, setTxnForm, onClose, onFetchFx, fxRate, fxLoading }) {
+function TransactionPanel({ holding, onAddTxn, onReload, onDeleteTxn, txnForm, setTxnForm, onClose, onFetchFx, fxRate, fxLoading }) {
   const txns = (holding.transactions || []).slice().sort((a,b)=>new Date(a.txn_date)-new Date(b.txn_date));
   const buys  = txns.filter(t=>t.txn_type==="BUY");
   const sells = txns.filter(t=>t.txn_type==="SELL");
@@ -179,7 +179,7 @@ function TransactionPanel({ holding, onAddTxn, onDeleteTxn, txnForm, setTxnForm,
           })});
       }
       // Reload holdings via parent
-      onAddTxn();
+      await onReload(holding.id);
       setSipMode(false); setSipPreview([]);
     }catch(e){ setSipError(e.message); }
     setSipImporting(false);
@@ -687,6 +687,13 @@ export default function App() {
       setGlobalTxnModal(false);
     }catch(e){ alert("Failed: "+e.message); }
     finally{ txnSaving.current = false; }
+  }
+
+  async function reloadHoldings(holdingId){
+    const hlds = await api("/api/holdings");
+    setHoldings(hlds||[]);
+    const anchor = holdingId || txnHolding?.id;
+    if(anchor) setTxnHolding(hlds.find(h=>h.id===anchor)||null);
   }
 
   async function deleteTransaction(txnId, holdingId){
@@ -1637,7 +1644,7 @@ ${alertLines||"  None"}`;
     })()}
 
     {/* Inline transaction history panel (opened from 📋 button on holding row) */}
-    {txnHolding&&<TransactionPanel holding={txnHolding} txnForm={txnForm} setTxnForm={setTxnForm} onAddTxn={addTransaction} onDeleteTxn={deleteTransaction} onClose={()=>setTxnHolding(null)} onFetchFx={fetchUsdInr} fxRate={usdInrRate} fxLoading={usdInrLoading}/>}
+    {txnHolding&&<TransactionPanel holding={txnHolding} txnForm={txnForm} setTxnForm={setTxnForm} onAddTxn={addTransaction} onReload={reloadHoldings} onDeleteTxn={deleteTransaction} onClose={()=>setTxnHolding(null)} onFetchFx={fetchUsdInr} fxRate={usdInrRate} fxLoading={usdInrLoading}/>}
     {modal==="member"&&(<Overlay onClose={()=>setModal(null)} narrow><div className="modtitle">Add Family Member</div><FG label="Full Name"><input className="fi" value={newMember.name} onChange={e=>setNewMember(p=>({...p,name:e.target.value}))}/></FG><FG label="Relation"><select className="fi fs" value={newMember.relation} onChange={e=>setNewMember(p=>({...p,relation:e.target.value}))}><option value="">Select</option>{["Self","Spouse","Son","Daughter","Father","Mother","Sibling"].map(r=><option key={r} value={r}>{r}</option>)}</select></FG><MA><button className="btnc" onClick={()=>setModal(null)}>Cancel</button><button className="btns" onClick={addMember}>Add</button></MA></Overlay>)}
     {modal==="goal"&&(<Overlay onClose={()=>setModal(null)}><div className="modtitle">Add Financial Goal</div><FG label="Goal Name"><input className="fi" value={goalForm.name} onChange={e=>setGoalForm(p=>({...p,name:e.target.value}))}/></FG><div className="frow"><FG label="Target Amount ₹"><input type="number" className="fi" value={goalForm.targetAmount} onChange={e=>setGoalForm(p=>({...p,targetAmount:e.target.value}))}/></FG><FG label="Target Date"><input type="date" className="fi" value={goalForm.targetDate} onChange={e=>setGoalForm(p=>({...p,targetDate:e.target.value}))}/></FG></div><div className="frow"><FG label="Category"><select className="fi fs" value={goalForm.category} onChange={e=>setGoalForm(p=>({...p,category:e.target.value}))}>{["Retirement","Education","Real Estate","Emergency Fund","Wedding","Travel","Business"].map(c=><option key={c} value={c}>{c}</option>)}</select></FG><FG label="Colour"><input type="color" className="fi" value={goalForm.color} onChange={e=>setGoalForm(p=>({...p,color:e.target.value}))} style={{height:40,padding:"4px 8px",cursor:"pointer"}}/></FG></div><FG label="Notes"><input className="fi" value={goalForm.notes} onChange={e=>setGoalForm(p=>({...p,notes:e.target.value}))}/></FG><MA><button className="btnc" onClick={()=>setModal(null)}>Cancel</button><button className="btns" onClick={addGoal} disabled={!goalForm.name||!goalForm.targetAmount}>Add Goal</button></MA></Overlay>)}
     {modal==="alert"&&(<Overlay onClose={()=>setModal(null)} narrow><div className="modtitle">New Alert Rule</div><FG label="Alert Type"><select className="fi fs" value={alertForm.type} onChange={e=>setAlertForm(p=>({...p,type:e.target.value}))}><option value="ALLOCATION_DRIFT">Over-weight</option><option value="CONCENTRATION">Under-weight</option><option value="RETURN_TARGET">Return below target</option></select></FG>{alertForm.type!=="RETURN_TARGET"&&<FG label="Asset Class"><select className="fi fs" value={alertForm.assetType} onChange={e=>setAlertForm(p=>({...p,assetType:e.target.value}))}>{Object.entries(AT).map(([k,v])=><option key={k} value={k}>{v.icon} {v.label}</option>)}</select></FG>}<FG label={alertForm.type==="RETURN_TARGET"?"Target Return %":"Threshold %"}><input type="number" className="fi" value={alertForm.threshold} onChange={e=>setAlertForm(p=>({...p,threshold:e.target.value}))}/></FG><FG label="Description"><input className="fi" value={alertForm.label} onChange={e=>setAlertForm(p=>({...p,label:e.target.value}))}/></FG><MA><button className="btnc" onClick={()=>setModal(null)}>Cancel</button><button className="btns" onClick={addAlert} disabled={!alertForm.threshold||!alertForm.label}>Add Alert</button></MA></Overlay>)}
