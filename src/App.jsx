@@ -223,7 +223,7 @@ function TransactionPanel({ holding, onAddTxn, onReload, onDeleteTxn, txnForm, s
               </FG>
               <FG label="SIP Date (day of month)">
                 <select className="fi fs" value={sipDay} onChange={e=>setSipDay(e.target.value)}>
-                  {[1,2,3,5,7,8,10,12,13,15,17,18,20,22,25,28].map(d=><option key={d} value={d}>{d}{d===1?"st":d===2?"nd":d===3?"rd":"th"}</option>)}
+                  {Array.from({length:31},(_,i)=>i+1).map(d=><option key={d} value={d}>{d}{d===1?"st":d===2?"nd":d===3?"rd":"th"}</option>)}
                 </select>
               </FG>
             </div>
