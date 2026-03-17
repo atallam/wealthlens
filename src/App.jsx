@@ -1148,7 +1148,24 @@ ${alertLines||"  None"}`;
               {byType.map(row=>{const a=AT[row.t],g=row.v-row.i;return(<div key={row.t} className="arow"><div className="aicon">{a.icon}</div><div className="ainfo"><div className="aname">{a.label}</div><div className="abg"><div className="afill" style={{width:`${row.pct}%`,background:a.color}}/></div></div><div className="argt"><div className="aval">{fmt(row.v)}</div><div className={`apct${g>=0?" gain":" loss"}`}>{row.pct.toFixed(1)}% · {fmtPct(row.i>0?(g/row.i)*100:0)}</div></div></div>);})}
             </div>
             <div className="card"><div className="ctitle">Member Breakdown</div>
-              {mSum.map(m=>(<div key={m.id} className="msrow"><div className="av">{m.name[0]}</div><div><div style={{fontSize:".88rem",color:"#e8e0d0"}}>{m.name}</div><div style={{fontSize:".68rem",color:"rgba(232,224,208,.33)",textTransform:"uppercase",letterSpacing:".05em"}}>{m.relation}</div></div><div style={{marginLeft:"auto",textAlign:"right"}}><div style={{fontFamily:"'DM Mono',monospace",fontSize:".85rem",color:"#e8e0d0"}}>{fmt(m.cur)}</div><div className={m.gain>=0?"gain":"loss"} style={{fontSize:".7rem"}}>{fmtPct(m.pct)}</div></div></div>))}
+              {mSum.map(m=>{const share=totCur>0?(m.cur/totCur)*100:0;return(<div key={m.id} className="msrow">
+  <div className="av">{m.name[0]}</div>
+  <div style={{flex:1}}>
+    <div style={{fontSize:".88rem",color:"#e8e0d0"}}>{m.name}</div>
+    <div style={{fontSize:".68rem",color:"rgba(232,224,208,.33)",textTransform:"uppercase",letterSpacing:".05em"}}>{m.relation}</div>
+    <div style={{marginTop:".35rem",height:3,background:"rgba(255,255,255,.07)",borderRadius:2,overflow:"hidden"}}>
+      <div style={{height:"100%",width:`${share}%`,background:"rgba(201,168,76,.55)",borderRadius:2,transition:"width .8s ease"}}/>
+    </div>
+  </div>
+  <div style={{marginLeft:".75rem",textAlign:"right",minWidth:90}}>
+    <div style={{fontFamily:"'DM Mono',monospace",fontSize:".85rem",color:"#e8e0d0"}}>{fmt(m.cur)}</div>
+    <div style={{display:"flex",gap:".4rem",justifyContent:"flex-end",marginTop:".18rem"}}>
+      <span style={{fontFamily:"'DM Mono',monospace",fontSize:".68rem",color:"#c9a84c",fontWeight:600}}>{share.toFixed(1)}%</span>
+      <span style={{fontFamily:"'DM Mono',monospace",fontSize:".68rem",color:"rgba(232,224,208,.32)"}}>|</span>
+      <span className={m.gain>=0?"gain":"loss"} style={{fontSize:".68rem"}}>{fmtPct(m.pct)}</span>
+    </div>
+  </div>
+</div>);})}
             </div>
           </div>
           <div className="card"><div className="ctitle">Category Distribution</div><DonutChart data={byType} total={totCur}/></div>
