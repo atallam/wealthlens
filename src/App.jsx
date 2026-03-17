@@ -112,22 +112,212 @@ function TransactionPanel({ holding, onAddTxn, onDeleteTxn, txnForm, setTxnForm,
   const netUnits = buys.reduce((s,t)=>s+Number(t.units),0) - sells.reduce((s,t)=>s+Number(t.units),0);
   const avgCost  = buys.length>0 ? buys.reduce((s,t)=>s+Number(t.units)*Number(t.price),0)/buys.reduce((s,t)=>s+Number(t.units),0) : 0;
   const isUS   = holding.type==="US_STOCK";
-  const priceLabel = holding.type==="MF" ? "NAV" : isUS ? "Price $" : "Price ₹";
+  const isMF   = holding.type==="MF";
+  const priceLabel = isMF ? "NAV" : isUS ? "Price $" : "Price ₹";
   const fx = +(holding.usd_inr_rate||fxRate||83.2);
+
+  // SIP state
+  const [sipMode,       setSipMode]       = useState(false);
+  const [sipAmount,     setSipAmount]     = useState("");
+  const [sipDay,        setSipDay]        = useState("5");
+  const [sipStartMonth, setSipStartMonth] = useState(() => { const d=new Date(); d.setMonth(d.getMonth()-11); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; });
+  const [sipEndMonth,   setSipEndMonth]   = useState(() => { const d=new Date(); const next=new Date(d.getFullYear(), d.getMonth()+3, 1); return `${next.getFullYear()}-${String(next.getMonth()+1).padStart(2,'0')}`; });
+  const [sipPreview,    setSipPreview]    = useState([]);
+  const [sipFetching,   setSipFetching]   = useState(false);
+  const [sipImporting,  setSipImporting]  = useState(false);
+  const [sipError,      setSipError]      = useState("");
+
+  async function fetchSipNavs(){
+    if(!sipAmount||!sipDay||!sipStartMonth||!sipEndMonth){ setSipError("Fill in all fields"); return; }
+    setSipError(""); setSipFetching(true); setSipPreview([]);
+    // Build months array
+    const [sy,sm] = sipStartMonth.split("-").map(Number);
+    const [ey,em] = sipEndMonth.split("-").map(Number);
+    const months = [];
+    let y=sy, m=sm;
+    while(y<ey||(y===ey&&m<=em)){
+      months.push({year:y, month:m, sip_date:+sipDay});
+      m++; if(m>12){m=1;y++;}
+      if(months.length>120) break; // safety cap 10 years
+    }
+    try{
+      const { data:{ session } } = await supabase.auth.getSession();
+      const token = session?.access_token||"";
+      const res = await fetch("/api/mf/sip-navs",{method:"POST",
+        headers:{"Content-Type":"application/json","Authorization":`Bearer ${token}`},
+        body:JSON.stringify({scheme_code:holding.scheme_code, months})});
+      const data = await res.json();
+      if(data.error) throw new Error(data.error);
+      // Enrich with units = amount / nav
+      const preview = data.results.map(r=>({
+        ...r,
+        units: r.nav ? (+sipAmount/r.nav) : null,
+        amount: +sipAmount,
+      }));
+      setSipPreview(preview);
+    }catch(e){ setSipError(e.message); }
+    setSipFetching(false);
+  }
+
+  async function importSip(){
+    const valid = sipPreview.filter(r=>r.nav&&r.txn_date&&r.units);
+    if(!valid.length){ setSipError("No valid transactions to import"); return; }
+    setSipImporting(true);
+    try{
+      const { data:{ session } } = await supabase.auth.getSession();
+      const token = session?.access_token||"";
+      for(const r of valid){
+        await fetch("/api/transactions",{method:"POST",
+          headers:{"Content-Type":"application/json","Authorization":`Bearer ${token}`},
+          body:JSON.stringify({
+            holding_id: holding.id,
+            txn_type:   "BUY",
+            units:      +r.units.toFixed(4),
+            price:      +r.nav.toFixed(4),
+            txn_date:   r.txn_date,
+            notes:      `SIP ₹${r.amount.toLocaleString("en-IN")}${r.is_future?" (scheduled)":r.is_estimated?" (est. NAV)":""}`,
+          })});
+      }
+      // Reload holdings via parent
+      onAddTxn();
+      setSipMode(false); setSipPreview([]);
+    }catch(e){ setSipError(e.message); }
+    setSipImporting(false);
+  }
+
+  // SIP summary stats
+  const validRows    = sipPreview.filter(r=>r.nav&&r.units);
+  const futureRows   = sipPreview.filter(r=>r.is_future);
+  const pastRows     = sipPreview.filter(r=>!r.is_future&&r.nav);
+  const totalInvested= validRows.reduce((s,r)=>s+r.amount,0);
+  const totalUnits   = validRows.reduce((s,r)=>s+(r.units||0),0);
+  const avgNav       = totalUnits>0 ? totalInvested/totalUnits : 0;
 
   return (
     <div className="ovl" onClick={e=>e.target===e.currentTarget&&onClose()}>
-      <div className="mod" style={{maxWidth:620}}>
+      <div className="mod" style={{maxWidth:660}}>
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"1.2rem"}}>
           <div>
             <div className="modtitle" style={{marginBottom:".15rem"}}>📋 Transactions</div>
             <div style={{fontSize:".73rem",color:"rgba(232,224,208,.38)"}}>{holding.name} {isUS&&<span style={{fontSize:".65rem",color:"#5a9ce0",marginLeft:4}}>🇺🇸 USD input</span>}</div>
           </div>
-          <button className="delbtn" style={{fontSize:"1rem"}} onClick={onClose}>✕</button>
+          <div style={{display:"flex",gap:".4rem",alignItems:"center"}}>
+            {isMF&&holding.scheme_code&&(
+              <button onClick={()=>{setSipMode(p=>!p);setSipPreview([]);setSipError("");}}
+                style={{background:sipMode?"rgba(160,132,202,.2)":"rgba(160,132,202,.1)",border:`1px solid rgba(160,132,202,${sipMode?".5":".25"})`,color:"#a084ca",borderRadius:5,padding:".28rem .65rem",cursor:"pointer",fontSize:".68rem",fontFamily:"'DM Sans',sans-serif",whiteSpace:"nowrap"}}>
+                {sipMode?"✕ Cancel SIP":"📅 Add SIP History"}
+              </button>
+            )}
+            <button className="delbtn" style={{fontSize:"1rem"}} onClick={onClose}>✕</button>
+          </div>
         </div>
 
-        {/* Summary bar */}
-        {txns.length>0&&(
+        {/* ── SIP BULK ENTRY MODE ── */}
+        {sipMode&&(
+          <div style={{background:"rgba(160,132,202,.06)",border:"1px solid rgba(160,132,202,.2)",borderRadius:10,padding:"1.1rem",marginBottom:"1.2rem"}}>
+            <div style={{fontSize:".7rem",letterSpacing:".1em",textTransform:"uppercase",color:"#a084ca",marginBottom:".9rem",fontWeight:600}}>📅 SIP Bulk Import</div>
+
+            <div className="frow" style={{marginBottom:".7rem"}}>
+              <FG label="Monthly SIP ₹">
+                <input type="number" className="fi" placeholder="e.g. 10000" value={sipAmount} onChange={e=>setSipAmount(e.target.value)}/>
+              </FG>
+              <FG label="SIP Date (day of month)">
+                <select className="fi fs" value={sipDay} onChange={e=>setSipDay(e.target.value)}>
+                  {[1,2,3,5,7,8,10,12,13,15,17,18,20,22,25,28].map(d=><option key={d} value={d}>{d}{d===1?"st":d===2?"nd":d===3?"rd":"th"}</option>)}
+                </select>
+              </FG>
+            </div>
+            <div className="frow" style={{marginBottom:".9rem"}}>
+              <FG label="Start Month">
+                <input type="month" className="fi" value={sipStartMonth} onChange={e=>setSipStartMonth(e.target.value)}/>
+              </FG>
+              <FG label="End Month (can be future)">
+                <input type="month" className="fi" value={sipEndMonth} onChange={e=>setSipEndMonth(e.target.value)}/>
+              </FG>
+            </div>
+
+            {sipError&&<div style={{fontSize:".75rem",color:"#e07c5a",marginBottom:".7rem"}}>⚠ {sipError}</div>}
+
+            <button onClick={fetchSipNavs} disabled={sipFetching||!sipAmount}
+              style={{width:"100%",background:"rgba(160,132,202,.15)",border:"1px solid rgba(160,132,202,.35)",color:"#a084ca",borderRadius:6,padding:".55rem",cursor:"pointer",fontSize:".8rem",fontFamily:"'DM Sans',sans-serif",fontWeight:500,marginBottom:sipPreview.length?".9rem":"0"}}>
+              {sipFetching?"⟳ Fetching NAVs from MFAPI…":"🔍 Fetch NAVs & Preview"}
+            </button>
+
+            {/* Preview table */}
+            {sipPreview.length>0&&(
+              <>
+                {/* Summary stats */}
+                <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:".5rem",marginBottom:".85rem"}}>
+                  {[
+                    {label:"Months",     val:sipPreview.length},
+                    {label:"Past SIPs",  val:pastRows.length},
+                    {label:"Future SIPs",val:futureRows.length, note:"estimated NAV"},
+                    {label:"Avg NAV",    val:`₹${avgNav.toFixed(4)}`},
+                  ].map(s=>(
+                    <div key={s.label} style={{background:"rgba(255,255,255,.03)",border:"1px solid rgba(255,255,255,.07)",borderRadius:7,padding:".55rem .7rem",textAlign:"center"}}>
+                      <div style={{fontSize:".58rem",letterSpacing:".07em",textTransform:"uppercase",color:"rgba(232,224,208,.3)",marginBottom:".2rem"}}>{s.label}</div>
+                      <div style={{fontFamily:"'DM Mono',monospace",fontSize:".82rem",color:s.label==="Future SIPs"?"#5a9ce0":"#c9a84c"}}>{s.val}</div>
+                      {s.note&&<div style={{fontSize:".58rem",color:"rgba(232,224,208,.28)",marginTop:".1rem"}}>{s.note}</div>}
+                    </div>
+                  ))}
+                </div>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:".5rem"}}>
+                  <div style={{fontSize:".72rem",color:"rgba(232,224,208,.45)"}}>
+                    Total invested: <span style={{fontFamily:"'DM Mono',monospace",color:"#c9a84c"}}>₹{totalInvested.toLocaleString("en-IN")}</span>
+                    <span style={{marginLeft:".75rem"}}>Total units: <span style={{fontFamily:"'DM Mono',monospace",color:"#c9a84c"}}>{totalUnits.toFixed(4)}</span></span>
+                  </div>
+                </div>
+
+                {/* Scrollable preview */}
+                <div style={{maxHeight:220,overflowY:"auto",marginBottom:".85rem",border:"1px solid rgba(255,255,255,.07)",borderRadius:7}}>
+                  <table className="ht" style={{fontSize:".72rem"}}>
+                    <thead style={{position:"sticky",top:0,background:"#0c1526",zIndex:1}}>
+                      <tr>
+                        <th>Month</th><th>Txn Date</th><th className="r">NAV ₹</th>
+                        <th className="r">Units</th><th className="r">Amount</th><th>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sipPreview.map((r,i)=>(
+                        <tr key={i} style={{opacity:r.nav?1:.5}}>
+                          <td className="mono">{String(r.month).padStart(2,'0')}/{r.year}</td>
+                          <td className="mono dim">{r.txn_date||"—"}</td>
+                          <td className="r mono">{r.nav?`₹${r.nav.toFixed(4)}`:"—"}</td>
+                          <td className="r mono">{r.units?r.units.toFixed(4):"—"}</td>
+                          <td className="r mono dim">₹{r.amount.toLocaleString("en-IN")}</td>
+                          <td>
+                            {r.is_future
+                              ? <span style={{fontSize:".62rem",color:"#5a9ce0",background:"rgba(90,156,224,.12)",padding:"1px 6px",borderRadius:3}}>Scheduled</span>
+                              : r.is_estimated
+                                ? <span style={{fontSize:".62rem",color:"#c9a84c",background:"rgba(201,168,76,.1)",padding:"1px 6px",borderRadius:3}}>Est. NAV</span>
+                                : r.nav
+                                  ? <span style={{fontSize:".62rem",color:"#4caf9a",background:"rgba(76,175,154,.1)",padding:"1px 6px",borderRadius:3}}>✓ Exact</span>
+                                  : <span style={{fontSize:".62rem",color:"#e07c5a"}}>No NAV</span>
+                            }
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {futureRows.length>0&&(
+                  <div style={{fontSize:".7rem",color:"rgba(90,156,224,.7)",marginBottom:".7rem",padding:".5rem .7rem",background:"rgba(90,156,224,.06)",borderRadius:6,border:"1px solid rgba(90,156,224,.15)"}}>
+                    ℹ {futureRows.length} future SIP{futureRows.length>1?"s":""} will use today's NAV as a placeholder and be marked as scheduled. Update them after each actual investment.
+                  </div>
+                )}
+
+                <button onClick={importSip} disabled={sipImporting||validRows.length===0}
+                  style={{width:"100%",background:"rgba(76,175,154,.15)",border:"1px solid rgba(76,175,154,.35)",color:"#4caf9a",borderRadius:6,padding:".6rem",cursor:"pointer",fontSize:".82rem",fontFamily:"'DM Sans',sans-serif",fontWeight:600}}>
+                  {sipImporting?`⟳ Importing ${validRows.length} transactions…`:`⇩ Import ${validRows.length} SIP Transactions`}
+                </button>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* Summary bar — shown when not in SIP mode */}
+        {!sipMode&&txns.length>0&&(
           <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:".6rem",marginBottom:"1.2rem"}}>
             {[
               {label:"Net Units", val:netUnits.toFixed(4)},
@@ -143,8 +333,8 @@ function TransactionPanel({ holding, onAddTxn, onDeleteTxn, txnForm, setTxnForm,
         )}
 
         {/* Transaction list */}
-        {txns.length===0
-          ? <div className="empty" style={{padding:"1.5rem"}}>No transactions yet — add one below</div>
+        {!sipMode&&(txns.length===0
+          ? <div className="empty" style={{padding:"1.5rem"}}>No transactions yet — add one below or use 📅 Add SIP History</div>
           : <div style={{maxHeight:220,overflowY:"auto",marginBottom:"1.2rem"}}>
               <table className="ht" style={{fontSize:".75rem"}}>
                 <thead><tr>
@@ -172,9 +362,10 @@ function TransactionPanel({ holding, onAddTxn, onDeleteTxn, txnForm, setTxnForm,
                 </tbody>
               </table>
             </div>
-        }
+        )}
 
-        {/* Add transaction form */}
+        {/* Add single transaction form — hidden in SIP mode */}
+        {!sipMode&&(
         <div style={{background:"rgba(255,255,255,.02)",border:"1px solid rgba(255,255,255,.07)",borderRadius:9,padding:"1rem"}}>
           <div style={{fontSize:".68rem",letterSpacing:".1em",textTransform:"uppercase",color:"rgba(232,224,208,.35)",marginBottom:".8rem"}}>Add Transaction</div>
           <div className="frow">
@@ -195,7 +386,6 @@ function TransactionPanel({ holding, onAddTxn, onDeleteTxn, txnForm, setTxnForm,
             )}
             <FG label="Date"><input type="date" className="fi" value={txnForm.txn_date} onChange={e=>setTxnForm(p=>({...p,txn_date:e.target.value}))}/></FG>
           </div>
-          {/* USD → INR info bar */}
           {isUS&&(
             <div style={{display:"flex",alignItems:"center",gap:".75rem",marginBottom:".7rem",padding:".5rem .8rem",background:"rgba(90,156,224,.06)",border:"1px solid rgba(90,156,224,.18)",borderRadius:6}}>
               <div style={{flex:1,fontSize:".75rem"}}>
@@ -214,6 +404,7 @@ function TransactionPanel({ holding, onAddTxn, onDeleteTxn, txnForm, setTxnForm,
             <button className="btns" onClick={()=>onAddTxn()} disabled={!txnForm.units||!txnForm.price||!txnForm.txn_date}>+ Add Transaction</button>
           </MA>
         </div>
+        )}
       </div>
     </div>
   );

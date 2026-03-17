@@ -290,6 +290,70 @@ app.get("/api/mf/search", auth, async (req, res) => {
   }
 });
 
+// ── SIP BATCH NAV — fetch NAVs for a date range for SIP import ───
+app.post("/api/mf/sip-navs", auth, async (req, res) => {
+  const { scheme_code, months } = req.body;
+  // months = [{year, month, sip_date}] — array of {year:2024, month:1, sip_date:5}
+  if (!scheme_code || !months?.length) return res.status(400).json({ error: "scheme_code and months required" });
+
+  try {
+    // Fetch full NAV history once
+    const response = await fetch(`https://api.mfapi.in/mf/${scheme_code}`);
+    const data = await response.json();
+    const navHistory = data?.data || []; // [{date: "05-01-2024", nav: "77.8900"}, ...]
+    const meta = data?.meta || {};
+
+    // Build a map of date string → nav for fast lookup
+    // MFAPI returns dates as DD-MM-YYYY
+    const navMap = {};
+    for (const entry of navHistory) {
+      navMap[entry.date] = parseFloat(entry.nav);
+    }
+
+    // For each requested month, find the NAV on or after the SIP date
+    const results = months.map(({ year, month, sip_date }) => {
+      const isFuture = new Date(year, month - 1, sip_date) > new Date();
+
+      if (isFuture) {
+        // For future months use latest available NAV as estimate
+        const latestNav = navHistory[0] ? parseFloat(navHistory[0].nav) : null;
+        return {
+          year, month, sip_date,
+          txn_date:  `${year}-${String(month).padStart(2,'0')}-${String(sip_date).padStart(2,'0')}`,
+          nav:       latestNav,
+          nav_date:  navHistory[0]?.date || null,
+          is_future: true,
+          is_estimated: true,
+        };
+      }
+
+      // Try the SIP date first, then search forward up to 7 days (weekends/holidays)
+      for (let offset = 0; offset <= 7; offset++) {
+        const d = new Date(year, month - 1, sip_date + offset);
+        const dd = String(d.getDate()).padStart(2,'0');
+        const mm = String(d.getMonth()+1).padStart(2,'0');
+        const yyyy = d.getFullYear();
+        const key = `${dd}-${mm}-${yyyy}`;
+        if (navMap[key]) {
+          return {
+            year, month, sip_date,
+            txn_date:  `${yyyy}-${mm}-${dd}`,
+            nav:       navMap[key],
+            nav_date:  key,
+            is_future: false,
+            is_estimated: offset > 0,
+          };
+        }
+      }
+      return { year, month, sip_date, txn_date: null, nav: null, is_future: false, is_estimated: false };
+    });
+
+    res.json({ results, fund_house: meta.fund_house || "", scheme_name: meta.scheme_name || "" });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── MF NAV LOOKUP — get current NAV for a scheme code ────────────
 app.get("/api/mf/nav/:schemeCode", auth, async (req, res) => {
   try {
