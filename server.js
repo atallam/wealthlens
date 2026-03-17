@@ -210,23 +210,37 @@ app.get("/api/etf/search", auth, async (req, res) => {
   const q = req.query.q || "";
   if (q.length < 2) return res.json([]);
   try {
-    const url = `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(q)}&quotesCount=15&newsCount=0&listsCount=0`;
+    const url = `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(q)}&quotesCount=20&newsCount=0&listsCount=0`;
     const response = await fetch(url, {
       headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" }
     });
     const data = await response.json();
     const quotes = data?.quotes || [];
-    // Filter to ETFs listed on NSE (.NS suffix) or BSE (.BO suffix)
+
+    // Indian ETFs on Yahoo Finance are often tagged as EQUITY, not ETF.
+    // Filter: must be on NSE (.NS) or BSE (.BO), and either
+    //   (a) quoteType is ETF, OR
+    //   (b) name contains ETF/BeES/BEES/Fund keywords
+    const ETF_KEYWORDS = /etf|bees|fund|gold|nifty|sensex|index|junior|midcap|smallcap|liquid|overnight|banking|infra|pharma|it\s|tech/i;
+
     const etfs = quotes
-      .filter(q => q.quoteType === "ETF" && (q.symbol?.endsWith(".NS") || q.symbol?.endsWith(".BO") || q.exchange === "NSI" || q.exchange === "BSE"))
-      .slice(0, 8)
+      .filter(q => {
+        const onIndianExchange = q.symbol?.endsWith(".NS") || q.symbol?.endsWith(".BO")
+                               || q.exchange === "NSI"   || q.exchange === "BSE";
+        if (!onIndianExchange) return false;
+        const isEtfType = q.quoteType === "ETF";
+        const nameHint  = ETF_KEYWORDS.test(q.longname||"") || ETF_KEYWORDS.test(q.shortname||"");
+        return isEtfType || nameHint;
+      })
+      .slice(0, 10)
       .map(q => ({
         ticker:   q.symbol?.replace(/\.(NS|BO)$/, "") || q.symbol,
         symbol:   q.symbol,
         name:     q.longname || q.shortname || q.symbol,
-        exchange: q.exchange || "NSE",
+        exchange: q.exchange === "NSI" ? "NSE" : q.exchange === "BSE" ? "BSE" : q.exchange || "NSE",
         type:     q.quoteType,
       }));
+
     res.json(etfs);
   } catch (e) {
     res.status(500).json({ error: e.message });
