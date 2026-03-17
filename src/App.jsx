@@ -105,21 +105,23 @@ function LoginScreen({ error }) {
 /* ══════════════════════════════════════════════
    TRANSACTION PANEL (per holding)
 ══════════════════════════════════════════════ */
-function TransactionPanel({ holding, onAddTxn, onDeleteTxn, txnForm, setTxnForm, onClose }) {
+function TransactionPanel({ holding, onAddTxn, onDeleteTxn, txnForm, setTxnForm, onClose, onFetchFx, fxRate, fxLoading }) {
   const txns = (holding.transactions || []).slice().sort((a,b)=>new Date(a.txn_date)-new Date(b.txn_date));
   const buys  = txns.filter(t=>t.txn_type==="BUY");
   const sells = txns.filter(t=>t.txn_type==="SELL");
   const netUnits = buys.reduce((s,t)=>s+Number(t.units),0) - sells.reduce((s,t)=>s+Number(t.units),0);
   const avgCost  = buys.length>0 ? buys.reduce((s,t)=>s+Number(t.units)*Number(t.price),0)/buys.reduce((s,t)=>s+Number(t.units),0) : 0;
-  const priceLabel = holding.type==="MF"?"NAV":"Price";
+  const isUS   = holding.type==="US_STOCK";
+  const priceLabel = holding.type==="MF" ? "NAV" : isUS ? "Price $" : "Price ₹";
+  const fx = +(holding.usd_inr_rate||fxRate||83.2);
 
   return (
     <div className="ovl" onClick={e=>e.target===e.currentTarget&&onClose()}>
-      <div className="mod" style={{maxWidth:600}}>
+      <div className="mod" style={{maxWidth:620}}>
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"1.2rem"}}>
           <div>
             <div className="modtitle" style={{marginBottom:".15rem"}}>📋 Transactions</div>
-            <div style={{fontSize:".73rem",color:"rgba(232,224,208,.38)"}}>{holding.name}</div>
+            <div style={{fontSize:".73rem",color:"rgba(232,224,208,.38)"}}>{holding.name} {isUS&&<span style={{fontSize:".65rem",color:"#5a9ce0",marginLeft:4}}>🇺🇸 USD input</span>}</div>
           </div>
           <button className="delbtn" style={{fontSize:"1rem"}} onClick={onClose}>✕</button>
         </div>
@@ -129,7 +131,7 @@ function TransactionPanel({ holding, onAddTxn, onDeleteTxn, txnForm, setTxnForm,
           <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:".6rem",marginBottom:"1.2rem"}}>
             {[
               {label:"Net Units", val:netUnits.toFixed(4)},
-              {label:`Avg Cost`, val:`₹${avgCost.toLocaleString("en-IN",{maximumFractionDigits:2})}`},
+              {label:"Avg Cost (INR)", val:`₹${avgCost.toLocaleString("en-IN",{maximumFractionDigits:2})}`},
               {label:"Transactions", val:txns.length},
             ].map(s=>(
               <div key={s.label} style={{background:"rgba(255,255,255,.03)",border:"1px solid rgba(255,255,255,.07)",borderRadius:8,padding:".7rem .9rem",textAlign:"center"}}>
@@ -143,28 +145,27 @@ function TransactionPanel({ holding, onAddTxn, onDeleteTxn, txnForm, setTxnForm,
         {/* Transaction list */}
         {txns.length===0
           ? <div className="empty" style={{padding:"1.5rem"}}>No transactions yet — add one below</div>
-          : <div style={{maxHeight:240,overflowY:"auto",marginBottom:"1.2rem"}}>
+          : <div style={{maxHeight:220,overflowY:"auto",marginBottom:"1.2rem"}}>
               <table className="ht" style={{fontSize:".75rem"}}>
                 <thead><tr>
                   <th>Date</th><th>Type</th><th className="r">Units</th>
-                  <th className="r">{priceLabel}</th><th className="r">Value</th>
+                  <th className="r">{isUS?"Price $":"Price ₹"}</th>
+                  {isUS&&<th className="r">Price ₹</th>}
+                  <th className="r">Total ₹</th>
                   <th>Notes</th><th/>
                 </tr></thead>
                 <tbody>
                   {txns.map(t=>(
                     <tr key={t.id}>
                       <td className="mono dim">{t.txn_date}</td>
-                      <td>
-                        <span style={{fontSize:".65rem",padding:"2px 7px",borderRadius:3,fontWeight:600,
-                          background:t.txn_type==="BUY"?"rgba(76,175,154,.15)":"rgba(224,124,90,.15)",
-                          color:t.txn_type==="BUY"?"#4caf9a":"#e07c5a"}}>
-                          {t.txn_type}
-                        </span>
-                      </td>
+                      <td><span style={{fontSize:".65rem",padding:"2px 7px",borderRadius:3,fontWeight:600,background:t.txn_type==="BUY"?"rgba(76,175,154,.15)":"rgba(224,124,90,.15)",color:t.txn_type==="BUY"?"#4caf9a":"#e07c5a"}}>{t.txn_type}</span></td>
                       <td className="r mono">{Number(t.units).toFixed(4)}</td>
-                      <td className="r mono dim">₹{Number(t.price).toLocaleString("en-IN",{maximumFractionDigits:2})}</td>
+                      {isUS
+                        ? <><td className="r mono dim">${t.price_usd!=null?Number(t.price_usd).toFixed(2):(Number(t.price)/fx).toFixed(2)}</td><td className="r mono dim">₹{Number(t.price).toLocaleString("en-IN",{maximumFractionDigits:0})}</td></>
+                        : <td className="r mono dim">₹{Number(t.price).toLocaleString("en-IN",{maximumFractionDigits:2})}</td>
+                      }
                       <td className="r mono" style={{color:"#e8e0d0"}}>₹{(Number(t.units)*Number(t.price)).toLocaleString("en-IN",{maximumFractionDigits:0})}</td>
-                      <td className="dim" style={{maxWidth:120,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.notes||"—"}</td>
+                      <td className="dim" style={{maxWidth:110,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.notes||"—"}</td>
                       <td><button className="delbtn" onClick={()=>onDeleteTxn(t.id, holding.id)}>✕</button></td>
                     </tr>
                   ))}
@@ -184,9 +185,29 @@ function TransactionPanel({ holding, onAddTxn, onDeleteTxn, txnForm, setTxnForm,
               </select>
             </FG>
             <FG label="Units"><input type="number" className="fi" placeholder="e.g. 100" value={txnForm.units} onChange={e=>setTxnForm(p=>({...p,units:e.target.value}))}/></FG>
-            <FG label={`${priceLabel} ₹`}><input type="number" className="fi" placeholder="per unit" value={txnForm.price} onChange={e=>setTxnForm(p=>({...p,price:e.target.value}))}/></FG>
+            {isUS ? (
+              <FG label="Price $ per unit">
+                <input type="number" className="fi" placeholder="e.g. 189.50" value={txnForm.price_usd||""}
+                  onChange={e=>{const usd=e.target.value;setTxnForm(p=>({...p,price_usd:usd,price:usd?(+usd*fx).toFixed(2):""}));}}/>
+              </FG>
+            ) : (
+              <FG label={`${priceLabel} per unit`}><input type="number" className="fi" placeholder="per unit" value={txnForm.price} onChange={e=>setTxnForm(p=>({...p,price:e.target.value}))}/></FG>
+            )}
             <FG label="Date"><input type="date" className="fi" value={txnForm.txn_date} onChange={e=>setTxnForm(p=>({...p,txn_date:e.target.value}))}/></FG>
           </div>
+          {/* USD → INR info bar */}
+          {isUS&&(
+            <div style={{display:"flex",alignItems:"center",gap:".75rem",marginBottom:".7rem",padding:".5rem .8rem",background:"rgba(90,156,224,.06)",border:"1px solid rgba(90,156,224,.18)",borderRadius:6}}>
+              <div style={{flex:1,fontSize:".75rem"}}>
+                <span style={{color:"rgba(232,224,208,.4)"}}>1 USD = </span>
+                <span style={{fontFamily:"'DM Mono',monospace",color:"#5a9ce0"}}>₹{fx.toFixed(2)}</span>
+                {txnForm.price_usd&&<span style={{marginLeft:".75rem",color:"rgba(232,224,208,.4)"}}>→ ₹<span style={{fontFamily:"'DM Mono',monospace",color:"#c9a84c"}}>{(+txnForm.price_usd*fx).toLocaleString("en-IN",{maximumFractionDigits:0})}</span> per unit</span>}
+              </div>
+              <button onClick={onFetchFx} disabled={fxLoading} style={{background:"rgba(90,156,224,.15)",border:"1px solid rgba(90,156,224,.3)",color:"#5a9ce0",borderRadius:4,padding:"2px 8px",cursor:"pointer",fontSize:".65rem",fontFamily:"'DM Sans',sans-serif"}}>
+                {fxLoading?"…":"⟳ Rate"}
+              </button>
+            </div>
+          )}
           <FG label="Notes (optional)"><input className="fi" placeholder="e.g. SIP, bonus units, tax harvesting" value={txnForm.notes} onChange={e=>setTxnForm(p=>({...p,notes:e.target.value}))}/></FG>
           <MA>
             <button className="btnc" onClick={onClose}>Close</button>
@@ -327,6 +348,8 @@ export default function App() {
   const [txnHolding,     setTxnHolding]     = useState(null);
   const [txnForm,        setTxnForm]        = useState(BT);
   const [globalTxnModal, setGlobalTxnModal] = useState(false);
+  const [txnFilterMember, setTxnFilterMember] = useState("all");
+  const [txnFilterType,   setTxnFilterType]   = useState("ALL");
   const [mfSearch,       setMfSearch]       = useState("");
   const [mfResults,      setMfResults]      = useState([]);
   const [mfSearching,    setMfSearching]    = useState(false);
@@ -930,6 +953,24 @@ ${alertLines||"  None"}`;
                     );
                   })}
                 </tbody>
+                {/* Totals footer row */}
+                {visH.length>0&&(()=>{
+                  const totI=visH.reduce((s,h)=>s+getInv(h),0);
+                  const totC=visH.reduce((s,h)=>s+getVal(h),0);
+                  const totG=totC-totI;
+                  const totP=totI>0?(totG/totI)*100:0;
+                  return(
+                  <tfoot>
+                    <tr style={{borderTop:"2px solid rgba(201,168,76,.2)"}}>
+                      <td colSpan={6} style={{padding:".75rem .65rem",fontSize:".7rem",letterSpacing:".08em",textTransform:"uppercase",color:"rgba(232,224,208,.32)",fontWeight:600}}>Total · {visH.length} holding{visH.length!==1?"s":""}</td>
+                      <td className="r mono" style={{padding:".75rem .65rem",fontWeight:600,color:"rgba(232,224,208,.55)",fontSize:".83rem"}}>{fmt(totI)}</td>
+                      <td className="r mono" style={{padding:".75rem .65rem",fontWeight:700,color:"#c9a84c",fontSize:".88rem"}}>{fmt(totC)}</td>
+                      <td className={`r mono${totG>=0?" gain":" loss"}`} style={{padding:".75rem .65rem",fontWeight:600,fontSize:".83rem"}}>{totG>=0?"+":""}{fmt(totG)}</td>
+                      <td className={`r mono${totP>=0?" gain":" loss"}`} style={{padding:".75rem .65rem",fontWeight:600,fontSize:".83rem"}}>{fmtPct(totP)}</td>
+                      <td colSpan={3} style={{padding:".75rem .65rem"}}/>
+                    </tr>
+                  </tfoot>);
+                })()}
               </table>
             </div>
           )}
@@ -1287,22 +1328,46 @@ ${alertLines||"  None"}`;
       const isUS = selHolding?.type==="US_STOCK";
       const fxRate = +(selHolding?.usd_inr_rate||usdInrRate||83.2);
       const priceUsd = isUS ? +txnForm.price_usd||0 : 0;
-      const priceInr = isUS ? priceUsd * fxRate : +txnForm.price||0;
       const totalUsd = isUS ? priceUsd * +txnForm.units : 0;
       const totalInr = isUS ? totalUsd * fxRate : +txnForm.price * +txnForm.units;
+      // Filter holdings by selected member + type
+      const filteredHoldings = holdings
+        .filter(h=>["IN_STOCK","IN_ETF","US_STOCK","MF"].includes(h.type))
+        .filter(h=>txnFilterMember==="all"||h.member_id===txnFilterMember)
+        .filter(h=>txnFilterType==="ALL"||h.type===txnFilterType);
       return (
       <Overlay onClose={()=>setGlobalTxnModal(false)}>
         <div className="modtitle">Add Transaction</div>
-        <FG label="Holding">
+
+        {/* Filter row */}
+        <div style={{display:"flex",gap:".6rem",marginBottom:"1rem",padding:".75rem",background:"rgba(255,255,255,.02)",border:"1px solid rgba(255,255,255,.06)",borderRadius:8}}>
+          <div style={{flex:1}}>
+            <div style={{fontSize:".63rem",letterSpacing:".08em",textTransform:"uppercase",color:"rgba(232,224,208,.35)",marginBottom:".35rem"}}>Member</div>
+            <select className="fi fs" style={{marginBottom:0}} value={txnFilterMember} onChange={e=>{setTxnFilterMember(e.target.value);setTxnForm(p=>({...p,holding_id:"",price:"",price_usd:""}));}}>
+              <option value="all">All Members</option>
+              {members.map(m=><option key={m.id} value={m.id}>{m.name}</option>)}
+            </select>
+          </div>
+          <div style={{flex:1}}>
+            <div style={{fontSize:".63rem",letterSpacing:".08em",textTransform:"uppercase",color:"rgba(232,224,208,.35)",marginBottom:".35rem"}}>Asset Type</div>
+            <select className="fi fs" style={{marginBottom:0}} value={txnFilterType} onChange={e=>{setTxnFilterType(e.target.value);setTxnForm(p=>({...p,holding_id:"",price:"",price_usd:""}));}}>
+              <option value="ALL">All Types</option>
+              {["IN_STOCK","IN_ETF","MF","US_STOCK"].map(t=><option key={t} value={t}>{AT[t].icon} {AT[t].label}</option>)}
+            </select>
+          </div>
+        </div>
+
+        <FG label={`Holding ${filteredHoldings.length>0?`(${filteredHoldings.length} shown)`:""}`}>
           <select className="fi fs" value={txnForm.holding_id} onChange={e=>{
             const h=holdings.find(x=>x.id===e.target.value);
             setTxnForm(p=>({...p,holding_id:e.target.value,price:"",price_usd:""}));
             if(h?.type==="US_STOCK") fetchUsdInr();
           }}>
             <option value="">Select holding…</option>
-            {holdings.filter(h=>["IN_STOCK","IN_ETF","US_STOCK","MF"].includes(h.type)).map(h=>{
+            {filteredHoldings.map(h=>{
               const mn=members.find(m=>m.id===h.member_id)?.name||"";
-              return <option key={h.id} value={h.id}>{h.name}{mn?` (${mn})`:""}</option>;
+              const a=AT[h.type];
+              return <option key={h.id} value={h.id}>{a.icon} {h.name}{mn?` · ${mn}`:""}</option>;
             })}
           </select>
         </FG>
@@ -1338,7 +1403,7 @@ ${alertLines||"  None"}`;
             {txnForm.price_usd&&(
               <div style={{flex:1}}>
                 <div style={{fontSize:".68rem",color:"rgba(232,224,208,.38)",marginBottom:".25rem"}}>Price in INR</div>
-                <div style={{fontFamily:"'DM Mono',monospace",fontSize:".85rem",color:"#c9a84c"}}>₹{priceInr.toLocaleString("en-IN",{maximumFractionDigits:2})}</div>
+                <div style={{fontFamily:"'DM Mono',monospace",fontSize:".85rem",color:"#c9a84c"}}>₹{(+txnForm.price_usd*fxRate).toLocaleString("en-IN",{maximumFractionDigits:2})}</div>
               </div>
             )}
             <button onClick={fetchUsdInr} disabled={usdInrLoading}
@@ -1381,7 +1446,7 @@ ${alertLines||"  None"}`;
     })()}
 
     {/* Inline transaction history panel (opened from 📋 button on holding row) */}
-    {txnHolding&&<TransactionPanel holding={txnHolding} txnForm={txnForm} setTxnForm={setTxnForm} onAddTxn={addTransaction} onDeleteTxn={deleteTransaction} onClose={()=>setTxnHolding(null)}/>}
+    {txnHolding&&<TransactionPanel holding={txnHolding} txnForm={txnForm} setTxnForm={setTxnForm} onAddTxn={addTransaction} onDeleteTxn={deleteTransaction} onClose={()=>setTxnHolding(null)} onFetchFx={fetchUsdInr} fxRate={usdInrRate} fxLoading={usdInrLoading}/>}
     {modal==="member"&&(<Overlay onClose={()=>setModal(null)} narrow><div className="modtitle">Add Family Member</div><FG label="Full Name"><input className="fi" value={newMember.name} onChange={e=>setNewMember(p=>({...p,name:e.target.value}))}/></FG><FG label="Relation"><select className="fi fs" value={newMember.relation} onChange={e=>setNewMember(p=>({...p,relation:e.target.value}))}><option value="">Select</option>{["Self","Spouse","Son","Daughter","Father","Mother","Sibling"].map(r=><option key={r} value={r}>{r}</option>)}</select></FG><MA><button className="btnc" onClick={()=>setModal(null)}>Cancel</button><button className="btns" onClick={addMember}>Add</button></MA></Overlay>)}
     {modal==="goal"&&(<Overlay onClose={()=>setModal(null)}><div className="modtitle">Add Financial Goal</div><FG label="Goal Name"><input className="fi" value={goalForm.name} onChange={e=>setGoalForm(p=>({...p,name:e.target.value}))}/></FG><div className="frow"><FG label="Target Amount ₹"><input type="number" className="fi" value={goalForm.targetAmount} onChange={e=>setGoalForm(p=>({...p,targetAmount:e.target.value}))}/></FG><FG label="Target Date"><input type="date" className="fi" value={goalForm.targetDate} onChange={e=>setGoalForm(p=>({...p,targetDate:e.target.value}))}/></FG></div><div className="frow"><FG label="Category"><select className="fi fs" value={goalForm.category} onChange={e=>setGoalForm(p=>({...p,category:e.target.value}))}>{["Retirement","Education","Real Estate","Emergency Fund","Wedding","Travel","Business"].map(c=><option key={c} value={c}>{c}</option>)}</select></FG><FG label="Colour"><input type="color" className="fi" value={goalForm.color} onChange={e=>setGoalForm(p=>({...p,color:e.target.value}))} style={{height:40,padding:"4px 8px",cursor:"pointer"}}/></FG></div><FG label="Notes"><input className="fi" value={goalForm.notes} onChange={e=>setGoalForm(p=>({...p,notes:e.target.value}))}/></FG><MA><button className="btnc" onClick={()=>setModal(null)}>Cancel</button><button className="btns" onClick={addGoal} disabled={!goalForm.name||!goalForm.targetAmount}>Add Goal</button></MA></Overlay>)}
     {modal==="alert"&&(<Overlay onClose={()=>setModal(null)} narrow><div className="modtitle">New Alert Rule</div><FG label="Alert Type"><select className="fi fs" value={alertForm.type} onChange={e=>setAlertForm(p=>({...p,type:e.target.value}))}><option value="ALLOCATION_DRIFT">Over-weight</option><option value="CONCENTRATION">Under-weight</option><option value="RETURN_TARGET">Return below target</option></select></FG>{alertForm.type!=="RETURN_TARGET"&&<FG label="Asset Class"><select className="fi fs" value={alertForm.assetType} onChange={e=>setAlertForm(p=>({...p,assetType:e.target.value}))}>{Object.entries(AT).map(([k,v])=><option key={k} value={k}>{v.icon} {v.label}</option>)}</select></FG>}<FG label={alertForm.type==="RETURN_TARGET"?"Target Return %":"Threshold %"}><input type="number" className="fi" value={alertForm.threshold} onChange={e=>setAlertForm(p=>({...p,threshold:e.target.value}))}/></FG><FG label="Description"><input className="fi" value={alertForm.label} onChange={e=>setAlertForm(p=>({...p,label:e.target.value}))}/></FG><MA><button className="btnc" onClick={()=>setModal(null)}>Cancel</button><button className="btns" onClick={addAlert} disabled={!alertForm.threshold||!alertForm.label}>Add Alert</button></MA></Overlay>)}
@@ -1396,7 +1461,26 @@ function DonutChart({data,total}){
   const slices=data.map(d=>{const sweep=(d.v/total)*360,startA=angle;angle+=sweep;return{...d,startA,endA:angle};});
   const pt=(a,rad)=>({x:cx+rad*Math.cos(a*Math.PI/180),y:cy+rad*Math.sin(a*Math.PI/180)});
   const arc=(sa,ea,or,ir2)=>{if(Math.abs(ea-sa)>=359.99)ea=sa+359.99;const s=pt(sa,or),e=pt(ea,or),si=pt(sa,ir2),ei=pt(ea,ir2),l=ea-sa>180?1:0;return`M${s.x},${s.y}A${or},${or},0,${l},1,${e.x},${e.y}L${ei.x},${ei.y}A${ir2},${ir2},0,${l},0,${si.x},${si.y}Z`;};
-  return(<div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:"2.5rem",flexWrap:"wrap",padding:".5rem 0"}}><svg width={S} height={S} viewBox={`0 0 ${S} ${S}`}>{slices.map(s=><path key={s.t} d={arc(s.startA,s.endA,r,ir)} fill={AT[s.t].color} opacity={0.85}/>)}<text x={cx} y={cy-6} textAnchor="middle" fill="#e8e0d0" fontSize="11" fontFamily="DM Mono">{total>=1e7?(total/1e7).toFixed(1)+"Cr":total>=1e5?(total/1e5).toFixed(1)+"L":"₹"+Math.round(total)}</text><text x={cx} y={cy+10} textAnchor="middle" fill="rgba(232,224,208,.33)" fontSize="8.5" fontFamily="DM Sans">TOTAL</text></svg><div style={{display:"flex",flexDirection:"column",gap:".55rem"}}>{slices.map(s=>(<div key={s.t} style={{display:"flex",alignItems:"center",gap:".5rem",fontSize:".77rem"}}><div style={{width:8,height:8,borderRadius:"50%",background:AT[s.t].color,flexShrink:0}}/><span style={{color:"rgba(232,224,208,.55)",minWidth:100}}>{AT[s.t].label}</span><span style={{fontFamily:"'DM Mono',monospace",fontSize:".73rem",color:"#e8e0d0"}}>{s.pct.toFixed(1)}%</span></div>))}</div></div>);
+  const fmtV=v=>v>=1e7?`₹${(v/1e7).toFixed(2)}Cr`:v>=1e5?`₹${(v/1e5).toFixed(2)}L`:`₹${Math.round(v).toLocaleString("en-IN")}`;
+  return(
+    <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:"2.5rem",flexWrap:"wrap",padding:".5rem 0"}}>
+      <svg width={S} height={S} viewBox={`0 0 ${S} ${S}`}>
+        {slices.map(s=><path key={s.t} d={arc(s.startA,s.endA,r,ir)} fill={AT[s.t].color} opacity={0.85}/>)}
+        <text x={cx} y={cy-6} textAnchor="middle" fill="#e8e0d0" fontSize="11" fontFamily="DM Mono">{total>=1e7?(total/1e7).toFixed(1)+"Cr":total>=1e5?(total/1e5).toFixed(1)+"L":"₹"+Math.round(total)}</text>
+        <text x={cx} y={cy+10} textAnchor="middle" fill="rgba(232,224,208,.33)" fontSize="8.5" fontFamily="DM Sans">TOTAL</text>
+      </svg>
+      <div style={{display:"flex",flexDirection:"column",gap:".6rem"}}>
+        {slices.map(s=>(
+          <div key={s.t} style={{display:"flex",alignItems:"center",gap:".55rem"}}>
+            <div style={{width:8,height:8,borderRadius:"50%",background:AT[s.t].color,flexShrink:0}}/>
+            <span style={{color:"rgba(232,224,208,.55)",fontSize:".76rem",minWidth:94}}>{AT[s.t].label}</span>
+            <span style={{fontFamily:"'DM Mono',monospace",fontSize:".73rem",color:"#e8e0d0",minWidth:72,textAlign:"right"}}>{fmtV(s.v)}</span>
+            <span style={{fontFamily:"'DM Mono',monospace",fontSize:".7rem",color:"rgba(232,224,208,.4)",minWidth:40,textAlign:"right"}}>{s.pct.toFixed(1)}%</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 function Overlay({onClose,children,narrow,wide}){return<div className="ovl" onClick={e=>e.target===e.currentTarget&&onClose()}><div className="mod" style={{maxWidth:narrow?380:wide?700:540}}>{children}</div></div>;}
 function FG({label,children}){return<div className="fg"><label className="flbl">{label}</label>{children}</div>;}
