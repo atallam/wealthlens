@@ -327,24 +327,45 @@ app.post("/api/mf/sip-navs", auth, async (req, res) => {
         };
       }
 
-      // Try the SIP date first, then search forward up to 7 days (weekends/holidays)
+      // Search both forward and backward up to 7 days; pick whichever is closer
+      const dateKey = (yr, mo, dy) => {
+        const d = new Date(yr, mo - 1, dy);
+        return {
+          key: `${String(d.getDate()).padStart(2,'0')}-${String(d.getMonth()+1).padStart(2,'0')}-${d.getFullYear()}`,
+          iso: `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`,
+        };
+      };
+
+      let fwdResult = null, bwdResult = null;
+
       for (let offset = 0; offset <= 7; offset++) {
-        const d = new Date(year, month - 1, sip_date + offset);
-        const dd = String(d.getDate()).padStart(2,'0');
-        const mm = String(d.getMonth()+1).padStart(2,'0');
-        const yyyy = d.getFullYear();
-        const key = `${dd}-${mm}-${yyyy}`;
-        if (navMap[key]) {
-          return {
-            year, month, sip_date,
-            txn_date:  `${yyyy}-${mm}-${dd}`,
-            nav:       navMap[key],
-            nav_date:  key,
-            is_future: false,
-            is_estimated: offset > 0,
-          };
+        if (!fwdResult) {
+          const { key, iso } = dateKey(year, month, sip_date + offset);
+          if (navMap[key]) fwdResult = { offset, key, iso };
         }
+        if (!bwdResult && offset > 0) {
+          const { key, iso } = dateKey(year, month, sip_date - offset);
+          if (navMap[key]) bwdResult = { offset, key, iso };
+        }
+        if (fwdResult && bwdResult) break;
       }
+
+      // Exact match (offset 0) wins; otherwise pick the closer direction
+      const best = fwdResult && bwdResult
+        ? (fwdResult.offset <= bwdResult.offset ? fwdResult : bwdResult)
+        : (fwdResult || bwdResult);
+
+      if (best) {
+        return {
+          year, month, sip_date,
+          txn_date:     best.iso,
+          nav:          navMap[best.key],
+          nav_date:     best.key,
+          is_future:    false,
+          is_estimated: best.offset > 0,
+        };
+      }
+
       return { year, month, sip_date, txn_date: null, nav: null, is_future: false, is_estimated: false };
     });
 
