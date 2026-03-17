@@ -59,7 +59,7 @@ const fmtSize=b=>b>1e6?`${(b/1e6).toFixed(1)}MB`:b>1e3?`${(b/1e3).toFixed(0)}KB`
 const BF={member_id:"",type:"IN_STOCK",name:"",ticker:"",scheme_code:"",interest_rate:"",start_date:"",maturity_date:"",purchase_value:"",current_value:"",principal:"",usd_inr_rate:"83.2"};
 // Transaction form
 const BT={holding_id:"",txn_type:"BUY",units:"",price:"",price_usd:"",txn_date:new Date().toISOString().slice(0,10),notes:""};
-const BG={name:"",targetAmount:"",targetDate:"",linkedMember:"all",category:"Retirement",color:"#c9a84c",notes:""};
+const BG={name:"",targetAmount:"",targetDate:"",linkedMembers:["all"],category:"Retirement",color:"#c9a84c",notes:"",priority:1,monthlyContribution:""};
 const BA={type:"ALLOCATION_DRIFT",assetType:"IN_STOCK",threshold:"",label:"",active:true};
 
 // ── API helper (attaches Supabase JWT) ───────────────────────────
@@ -824,7 +824,7 @@ export default function App() {
     interest_rate:h.interest_rate||"", usd_inr_rate:h.usd_inr_rate||83.2}); setModal("holding"); }
 
   function addMember(){if(!newMember.name)return;setMembers(p=>[...p,{id:uid(),...newMember}]);setNewMember({name:"",relation:""});setModal(null);}
-  function addGoal(){setGoals(p=>[...p,{id:uid(),...goalForm,targetAmount:+goalForm.targetAmount}]);setGoalForm(BG);setModal(null);}
+  function addGoal(){setGoals(p=>{const nextPri=p.length>0?Math.max(...p.map(x=>x.priority||1))+1:1;return[...p,{id:uid(),...goalForm,targetAmount:+goalForm.targetAmount,priority:goalForm.priority||nextPri,linkedMembers:goalForm.linkedMembers||["all"],monthlyContribution:+goalForm.monthlyContribution||0}];});setGoalForm(BG);setModal(null);}
   function addAlert(){setAlerts(p=>[...p,{id:uid(),...alertForm,threshold:+alertForm.threshold}]);setAlertForm(BA);setModal(null);}
 
   // ── MF Search ────────────────────────────────────────────────────
@@ -1305,13 +1305,86 @@ ${alertLines||"  None"}`;
         </div>)}
 
         {/* ── GOALS ── */}
-        {tab==="goals"&&(<>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"1.2rem"}}><div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.1rem",color:"#e8e0d0"}}>Financial Goals</div><button className="btn-sm" onClick={()=>{setGoalForm(BG);setModal("goal");}}>+ New Goal</button></div>
-          {goals.length===0&&<div className="card empty">Set your first financial milestone</div>}
-          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(300px,1fr))",gap:"1rem"}}>
-            {goals.map(g=>{const prog=Math.min((allCur/g.targetAmount)*100,100);const rem=Math.max(0,g.targetAmount-allCur);const yLeft=((Math.max(0,new Date(g.targetDate)-new Date()))/(864e5*365.25)).toFixed(1);return(<div key={g.id} className="card" style={{borderTop:`3px solid ${g.color}`,position:"relative"}}><button className="delbtn" style={{position:"absolute",top:10,right:10}} onClick={()=>setGoals(p=>p.filter(x=>x.id!==g.id))}>✕</button><div style={{display:"flex",alignItems:"center",gap:".55rem",marginBottom:".9rem"}}><div style={{width:9,height:9,borderRadius:"50%",background:g.color}}/><span style={{fontSize:".63rem",letterSpacing:".1em",textTransform:"uppercase",color:"rgba(232,224,208,.33)"}}>{g.category}</span></div><div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.2rem",color:"#e8e0d0",marginBottom:".25rem"}}>{g.name}</div>{g.notes&&<div style={{fontSize:".73rem",color:"rgba(232,224,208,.32)",marginBottom:".9rem"}}>{g.notes}</div>}<div style={{display:"flex",justifyContent:"space-between",marginBottom:".45rem"}}><span style={{fontFamily:"'DM Mono',monospace",fontSize:"1.05rem",color:g.color}}>{fmtCr(allCur)}</span><span style={{fontFamily:"'DM Mono',monospace",fontSize:".82rem",color:"rgba(232,224,208,.38)"}}>of {fmtCr(g.targetAmount)}</span></div><div className="gbbg"><div className="gbfill" style={{width:`${prog}%`,background:g.color}}/></div><div style={{display:"flex",justifyContent:"space-between",marginTop:".55rem",fontSize:".7rem"}}><span style={{color:"rgba(232,224,208,.38)"}}>Remaining <span style={{color:"#e8e0d0",fontFamily:"'DM Mono',monospace"}}>{fmtCr(rem)}</span></span><span style={{color:"rgba(232,224,208,.38)"}}>{yLeft}y · {prog.toFixed(0)}%</span></div></div>);})}
+        {tab==="goals"&&(()=>{
+          const sortedGoals=[...goals].sort((a,b)=>(a.priority||99)-(b.priority||99));
+          // helper: compute current value relevant to a goal's linked members
+          function goalCur(g){
+            const lm=g.linkedMembers||["all"];
+            if(lm.includes("all")||lm.length===0) return allCur;
+            return holdings.reduce((s,h)=>lm.includes(h.member_id)?s+getVal(h):s,0);
+          }
+          return(<>
+          {/* Header */}
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"1.2rem",flexWrap:"wrap",gap:".7rem"}}>
+            <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.1rem",color:"#e8e0d0"}}>Financial Goals</div>
+            <div style={{display:"flex",gap:".5rem"}}>
+              {goals.length>0&&<button className="btn-o" onClick={()=>setModal("goalplan")}>✦ Fulfillment Plan</button>}
+              <button className="btn-sm" onClick={()=>{setGoalForm({...BG,priority:goals.length+1});setModal("goal");}}>+ New Goal</button>
+            </div>
           </div>
-        </>)}
+
+          {goals.length===0&&<div className="card empty">Set your first financial milestone</div>}
+
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(310px,1fr))",gap:"1rem"}}>
+            {sortedGoals.map((g,idx)=>{
+              const cur=goalCur(g);
+              const prog=Math.min((cur/g.targetAmount)*100,100);
+              const rem=Math.max(0,g.targetAmount-cur);
+              const yLeft=((Math.max(0,new Date(g.targetDate)-new Date()))/(864e5*365.25)).toFixed(1);
+              const lm=g.linkedMembers||["all"];
+              const memberNames=lm.includes("all")?"All members":lm.map(id=>members.find(m=>m.id===id)?.name||"?").join(", ");
+              const monthly=g.monthlyContribution||0;
+              return(
+              <div key={g.id} className="card" style={{borderTop:`3px solid ${g.color}`,position:"relative"}}>
+                {/* Priority badge + controls */}
+                <div style={{position:"absolute",top:10,left:12,display:"flex",alignItems:"center",gap:".3rem"}}>
+                  <div style={{background:`${g.color}22`,border:`1px solid ${g.color}55`,borderRadius:3,padding:"1px 7px",fontSize:".6rem",letterSpacing:".08em",color:g.color,fontWeight:600}}>P{g.priority||idx+1}</div>
+                </div>
+                <div style={{position:"absolute",top:8,right:8,display:"flex",gap:".2rem"}}>
+                  <button className="delbtn" title="Move up" onClick={()=>setGoals(p=>{const s=[...p].sort((a,b)=>(a.priority||99)-(b.priority||99));const i=s.findIndex(x=>x.id===g.id);if(i===0)return p;const np=[...s];[np[i-1],np[i]]=[np[i],np[i-1]];return np.map((x,j)=>({...x,priority:j+1}));})}>↑</button>
+                  <button className="delbtn" title="Move down" onClick={()=>setGoals(p=>{const s=[...p].sort((a,b)=>(a.priority||99)-(b.priority||99));const i=s.findIndex(x=>x.id===g.id);if(i===s.length-1)return p;const np=[...s];[np[i],np[i+1]]=[np[i+1],np[i]];return np.map((x,j)=>({...x,priority:j+1}));})}>↓</button>
+                  <button className="delbtn" onClick={()=>setGoals(p=>p.filter(x=>x.id!==g.id))}>✕</button>
+                </div>
+
+                {/* Category */}
+                <div style={{display:"flex",alignItems:"center",gap:".55rem",marginBottom:".9rem",marginTop:".25rem"}}>
+                  <div style={{width:8,height:8,borderRadius:"50%",background:g.color}}/>
+                  <span style={{fontSize:".62rem",letterSpacing:".1em",textTransform:"uppercase",color:"rgba(232,224,208,.33)"}}>{g.category}</span>
+                </div>
+
+                {/* Goal name */}
+                <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.2rem",color:"#e8e0d0",marginBottom:".2rem"}}>{g.name}</div>
+                {g.notes&&<div style={{fontSize:".72rem",color:"rgba(232,224,208,.3)",marginBottom:".6rem"}}>{g.notes}</div>}
+
+                {/* Linked members pill */}
+                <div style={{marginBottom:".85rem"}}>
+                  <span style={{fontSize:".65rem",background:"rgba(255,255,255,.05)",border:"1px solid rgba(255,255,255,.1)",borderRadius:12,padding:"2px 9px",color:"rgba(232,224,208,.45)"}}>
+                    👤 {memberNames}
+                  </span>
+                </div>
+
+                {/* Progress */}
+                <div style={{display:"flex",justifyContent:"space-between",marginBottom:".45rem"}}>
+                  <span style={{fontFamily:"'DM Mono',monospace",fontSize:"1.05rem",color:g.color}}>{fmtCr(cur)}</span>
+                  <span style={{fontFamily:"'DM Mono',monospace",fontSize:".82rem",color:"rgba(232,224,208,.38)"}}>of {fmtCr(g.targetAmount)}</span>
+                </div>
+                <div className="gbbg"><div className="gbfill" style={{width:`${prog}%`,background:g.color}}/></div>
+                <div style={{display:"flex",justifyContent:"space-between",marginTop:".55rem",fontSize:".7rem"}}>
+                  <span style={{color:"rgba(232,224,208,.38)"}}>Remaining <span style={{color:"#e8e0d0",fontFamily:"'DM Mono',monospace"}}>{fmtCr(rem)}</span></span>
+                  <span style={{color:"rgba(232,224,208,.38)"}}>{yLeft}y · {prog.toFixed(0)}%</span>
+                </div>
+
+                {/* Monthly contribution if set */}
+                {monthly>0&&(
+                  <div style={{marginTop:".65rem",padding:".4rem .7rem",background:"rgba(255,255,255,.03)",borderRadius:5,fontSize:".68rem",color:"rgba(232,224,208,.4)"}}>
+                    Monthly SIP: <span style={{fontFamily:"'DM Mono',monospace",color:"rgba(232,224,208,.7)"}}>₹{monthly.toLocaleString("en-IN")}</span>
+                  </div>
+                )}
+              </div>);
+            })}
+          </div>
+          </>);
+        })()}
 
         {/* ── ALERTS ── */}
         {tab==="alerts"&&(<>
@@ -1773,11 +1846,195 @@ ${alertLines||"  None"}`;
     {/* Inline transaction history panel (opened from 📋 button on holding row) */}
     {txnHolding&&<TransactionPanel holding={txnHolding} txnForm={txnForm} setTxnForm={setTxnForm} onAddTxn={addTransaction} onReload={reloadHoldings} onDeleteTxn={deleteTransaction} onClose={()=>setTxnHolding(null)} onFetchFx={fetchUsdInr} fxRate={usdInrRate} fxLoading={usdInrLoading}/>}
     {modal==="member"&&(<Overlay onClose={()=>setModal(null)} narrow><div className="modtitle">Add Family Member</div><FG label="Full Name"><input className="fi" value={newMember.name} onChange={e=>setNewMember(p=>({...p,name:e.target.value}))}/></FG><FG label="Relation"><select className="fi fs" value={newMember.relation} onChange={e=>setNewMember(p=>({...p,relation:e.target.value}))}><option value="">Select</option>{["Self","Spouse","Son","Daughter","Father","Mother","Sibling"].map(r=><option key={r} value={r}>{r}</option>)}</select></FG><MA><button className="btnc" onClick={()=>setModal(null)}>Cancel</button><button className="btns" onClick={addMember}>Add</button></MA></Overlay>)}
-    {modal==="goal"&&(<Overlay onClose={()=>setModal(null)}><div className="modtitle">Add Financial Goal</div><FG label="Goal Name"><input className="fi" value={goalForm.name} onChange={e=>setGoalForm(p=>({...p,name:e.target.value}))}/></FG><div className="frow"><FG label="Target Amount ₹"><input type="number" className="fi" value={goalForm.targetAmount} onChange={e=>setGoalForm(p=>({...p,targetAmount:e.target.value}))}/></FG><FG label="Target Date"><input type="date" className="fi" value={goalForm.targetDate} onChange={e=>setGoalForm(p=>({...p,targetDate:e.target.value}))}/></FG></div><div className="frow"><FG label="Category"><select className="fi fs" value={goalForm.category} onChange={e=>setGoalForm(p=>({...p,category:e.target.value}))}>{["Retirement","Education","Real Estate","Emergency Fund","Wedding","Travel","Business"].map(c=><option key={c} value={c}>{c}</option>)}</select></FG><FG label="Colour"><input type="color" className="fi" value={goalForm.color} onChange={e=>setGoalForm(p=>({...p,color:e.target.value}))} style={{height:40,padding:"4px 8px",cursor:"pointer"}}/></FG></div><FG label="Notes"><input className="fi" value={goalForm.notes} onChange={e=>setGoalForm(p=>({...p,notes:e.target.value}))}/></FG><MA><button className="btnc" onClick={()=>setModal(null)}>Cancel</button><button className="btns" onClick={addGoal} disabled={!goalForm.name||!goalForm.targetAmount}>Add Goal</button></MA></Overlay>)}
+    {modal==="goal"&&(
+      <Overlay onClose={()=>setModal(null)}>
+        <div className="modtitle">Add Financial Goal</div>
+        <FG label="Goal Name"><input className="fi" placeholder="e.g. Daughter's Education" value={goalForm.name} onChange={e=>setGoalForm(p=>({...p,name:e.target.value}))}/></FG>
+        <div className="frow">
+          <FG label="Target Amount ₹"><input type="number" className="fi" placeholder="e.g. 5000000" value={goalForm.targetAmount} onChange={e=>setGoalForm(p=>({...p,targetAmount:e.target.value}))}/></FG>
+          <FG label="Target Date"><input type="date" className="fi" value={goalForm.targetDate} onChange={e=>setGoalForm(p=>({...p,targetDate:e.target.value}))}/></FG>
+        </div>
+        <div className="frow">
+          <FG label="Category">
+            <select className="fi fs" value={goalForm.category} onChange={e=>setGoalForm(p=>({...p,category:e.target.value}))}>
+              {["Retirement","Education","Real Estate","Emergency Fund","Wedding","Travel","Business"].map(c=><option key={c} value={c}>{c}</option>)}
+            </select>
+          </FG>
+          <FG label="Priority (1 = highest)">
+            <input type="number" className="fi" min="1" max="20" value={goalForm.priority} onChange={e=>setGoalForm(p=>({...p,priority:+e.target.value}))}/>
+          </FG>
+          <FG label="Colour"><input type="color" className="fi" value={goalForm.color} onChange={e=>setGoalForm(p=>({...p,color:e.target.value}))} style={{height:40,padding:"4px 8px",cursor:"pointer"}}/></FG>
+        </div>
+
+        {/* Member allocation */}
+        <div className="fg">
+          <label className="flbl">Link to Members</label>
+          <div style={{display:"flex",flexWrap:"wrap",gap:".4rem",marginTop:".3rem"}}>
+            {[{id:"all",name:"All Members"},...members].map(m=>{
+              const lm=goalForm.linkedMembers||["all"];
+              const sel=lm.includes(m.id);
+              return(
+              <div key={m.id} onClick={()=>setGoalForm(p=>{
+                const cur=p.linkedMembers||["all"];
+                if(m.id==="all") return {...p,linkedMembers:["all"]};
+                const without=cur.filter(x=>x!=="all"&&x!==m.id);
+                const next=sel?without:[...without,m.id];
+                return {...p,linkedMembers:next.length===0?["all"]:next};
+              })}
+              style={{padding:".3rem .75rem",borderRadius:20,cursor:"pointer",fontSize:".74rem",fontWeight:500,
+                background:sel?"rgba(201,168,76,.16)":"rgba(255,255,255,.04)",
+                border:`1px solid ${sel?"rgba(201,168,76,.45)":"rgba(255,255,255,.1)"}`,
+                color:sel?"#c9a84c":"rgba(232,224,208,.5)",transition:"all .15s"}}>
+                {m.id==="all"?"👨‍👩‍👧‍👦":m.name[0]} {m.name}
+              </div>);
+            })}
+          </div>
+          <div style={{fontSize:".65rem",color:"rgba(232,224,208,.28)",marginTop:".4rem"}}>Progress will be calculated using selected members' portfolio value</div>
+        </div>
+
+        <FG label="Monthly Contribution ₹ (optional)">
+          <input type="number" className="fi" placeholder="e.g. 10000" value={goalForm.monthlyContribution} onChange={e=>setGoalForm(p=>({...p,monthlyContribution:e.target.value}))}/>
+        </FG>
+        <FG label="Notes"><input className="fi" placeholder="Optional description" value={goalForm.notes} onChange={e=>setGoalForm(p=>({...p,notes:e.target.value}))}/></FG>
+        <MA>
+          <button className="btnc" onClick={()=>setModal(null)}>Cancel</button>
+          <button className="btns" onClick={addGoal} disabled={!goalForm.name||!goalForm.targetAmount}>Add Goal</button>
+        </MA>
+      </Overlay>
+    )}
+
+    <GoalPlanModal open={modal==="goalplan"} onClose={()=>setModal(null)} goals={goals} members={members} holdings={holdings} allCur={allCur} allInv={allInv} getVal={getVal} fmtCr={fmtCr} fmt={fmt} fmtPct={fmtPct}/>
     {modal==="alert"&&(<Overlay onClose={()=>setModal(null)} narrow><div className="modtitle">New Alert Rule</div><FG label="Alert Type"><select className="fi fs" value={alertForm.type} onChange={e=>setAlertForm(p=>({...p,type:e.target.value}))}><option value="ALLOCATION_DRIFT">Over-weight</option><option value="CONCENTRATION">Under-weight</option><option value="RETURN_TARGET">Return below target</option></select></FG>{alertForm.type!=="RETURN_TARGET"&&<FG label="Asset Class"><select className="fi fs" value={alertForm.assetType} onChange={e=>setAlertForm(p=>({...p,assetType:e.target.value}))}>{Object.entries(AT).map(([k,v])=><option key={k} value={k}>{v.icon} {v.label}</option>)}</select></FG>}<FG label={alertForm.type==="RETURN_TARGET"?"Target Return %":"Threshold %"}><input type="number" className="fi" value={alertForm.threshold} onChange={e=>setAlertForm(p=>({...p,threshold:e.target.value}))}/></FG><FG label="Description"><input className="fi" value={alertForm.label} onChange={e=>setAlertForm(p=>({...p,label:e.target.value}))}/></FG><MA><button className="btnc" onClick={()=>setModal(null)}>Cancel</button><button className="btns" onClick={addAlert} disabled={!alertForm.threshold||!alertForm.label}>Add Alert</button></MA></Overlay>)}
     {modal==="csv"&&(<Overlay onClose={()=>setModal(null)} wide><div className="modtitle">Preview — {csvPreview.length} Holdings</div><div style={{overflowX:"auto",maxHeight:300,overflowY:"auto"}}><table className="ht" style={{fontSize:".73rem"}}><thead><tr><th>Name</th><th>Type</th><th>Ticker/Code</th><th>Member</th><th className="r">Invested</th></tr></thead><tbody>{csvPreview.map((h,i)=>{const inv=getInv(h);return<tr key={i}><td>{h.name}</td><td><span className="tbadge2" style={{background:AT[h.type]?.color+"22",color:AT[h.type]?.color}}>{AT[h.type]?.icon} {AT[h.type]?.label||h.type}</span></td><td className="mono dim">{h.ticker||h.scheme_code||"—"}</td><td className="dim">{members.find(m=>m.id===h.member_id)?.name||"—"}</td><td className="r mono dim">{fmt(inv)}</td></tr>;})}</tbody></table></div><MA><button className="btnc" onClick={()=>setModal(null)}>Cancel</button><button className="btns" onClick={importCSV}>Import All</button></MA></Overlay>)}
     {modal==="pdf"&&(<Overlay onClose={()=>setModal(null)}><div className="modtitle">Portfolio Report</div>{pdfState.loading?(<div style={{textAlign:"center",padding:"2.5rem 0"}}><div style={{width:34,height:34,border:"2px solid rgba(201,168,76,.2)",borderTopColor:"#c9a84c",borderRadius:"50%",animation:"spin 1s linear infinite",margin:"0 auto 1rem"}}/><div style={{fontSize:".8rem",color:"rgba(232,224,208,.38)"}}>Generating AI commentary…</div><style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style></div>):(<><div style={{fontSize:".68rem",letterSpacing:".1em",textTransform:"uppercase",color:"#c9a84c",marginBottom:".7rem"}}>AI Advisor Commentary</div><div style={{background:"rgba(201,168,76,.05)",border:"1px solid rgba(201,168,76,.14)",borderRadius:8,padding:"1rem 1.2rem",fontSize:".8rem",lineHeight:1.72,color:"rgba(232,224,208,.7)",maxHeight:260,overflowY:"auto",whiteSpace:"pre-wrap"}}>{pdfState.summary}</div></>)}<MA><button className="btnc" onClick={()=>setModal(null)}>Close</button></MA></Overlay>)}
     </>
+  );
+}
+
+function GoalPlanModal({open,onClose,goals,members,holdings,allCur,allInv,getVal,fmtCr,fmt,fmtPct}){
+  const {useState:S,useEffect:E} = {useState,useEffect};
+  const [loading,setLoading] = S(false);
+  const [plan,setPlan]       = S("");
+  const [error,setError]     = S("");
+
+  function goalCurVal(g){
+    const lm=g.linkedMembers||["all"];
+    if(lm.includes("all")||lm.length===0) return allCur;
+    return holdings.reduce((s,h)=>lm.includes(h.member_id)?s+getVal(h):s,0);
+  }
+
+  E(()=>{
+    if(!open) return;
+    setPlan(""); setError("");
+    generate();
+  },[open]);
+
+  async function generate(){
+    setLoading(true);
+    const sorted=[...goals].sort((a,b)=>(a.priority||99)-(b.priority||99));
+    const goalDetails=sorted.map((g,i)=>{
+      const cur=goalCurVal(g);
+      const pct=g.targetAmount>0?(cur/g.targetAmount*100).toFixed(1):0;
+      const rem=Math.max(0,g.targetAmount-cur);
+      const yLeft=((Math.max(0,new Date(g.targetDate)-new Date()))/(864e5*365.25)).toFixed(1);
+      const lm=g.linkedMembers||["all"];
+      const mNames=lm.includes("all")?"all family members":lm.map(id=>members.find(m=>m.id===id)?.name||"?").join(", ");
+      return `${i+1}. ${g.name} [Priority ${g.priority||i+1}] — Category: ${g.category} | Target: ${fmtCr(g.targetAmount)} by ${g.targetDate} | Current: ${fmtCr(cur)} (${pct}%) | Remaining: ${fmtCr(rem)} | Time left: ${yLeft}y | Linked to: ${mNames}${g.monthlyContribution>0?` | Monthly SIP: ₹${(+g.monthlyContribution).toLocaleString("en-IN")}`:""}`;
+    }).join("\n");
+
+    const memberBreakdown=members.map(m=>{
+      const mCur=holdings.reduce((s,h)=>h.member_id===m.id?s+getVal(h):s,0);
+      const mInv=holdings.reduce((s,h)=>h.member_id===m.id?s+h.purchase_value||0:s,0);
+      return `  ${m.name} (${m.relation}): ${fmtCr(mCur)}`;
+    }).join("\n");
+
+    const prompt=`You are a wealth advisor for an Indian family. Analyse their financial goals and provide a clear, prioritised fulfillment plan.
+
+FAMILY PORTFOLIO SUMMARY:
+- Total portfolio value: ${fmtCr(allCur)}
+- Total invested: ${fmtCr(allInv)}
+- Total gain: ${fmtCr(allCur-allInv)} (${allInv>0?((allCur-allInv)/allInv*100).toFixed(1):0}% return)
+
+MEMBER PORTFOLIOS:
+${memberBreakdown}
+
+GOALS (sorted by priority):
+${goalDetails}
+
+Please provide:
+1. A brief assessment of each goal's feasibility given current portfolio and time horizon
+2. A recommended monthly SIP allocation strategy across goals (if multiple goals compete for funds)
+3. Specific action items for the top 3 priority goals
+4. Any goals that are at risk of not being met and what corrective action to take
+5. A summary recommendation on goal prioritisation
+
+Keep the response practical, specific to the numbers, and formatted clearly with headings. Use Indian number formatting (Lakhs/Crores).`;
+
+    try{
+      const res=await fetch("/api/ai/chat",{method:"POST",
+        headers:{"Content-Type":"application/json","Authorization":`Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`},
+        body:JSON.stringify({model:"claude-opus-4-5",max_tokens:2000,
+          system:"You are a concise, practical Indian family wealth advisor. Format with clear sections. Be specific with numbers.",
+          messages:[{role:"user",content:prompt}]})});
+      const data=await res.json();
+      const text=data.content?.filter(b=>b.type==="text").map(b=>b.text).join("")||"";
+      setPlan(text||"No response received");
+    }catch(e){ setError(e.message); }
+    setLoading(false);
+  }
+
+  if(!open) return null;
+  return(
+    <div className="ovl" onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div className="mod" style={{maxWidth:700}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"1.2rem"}}>
+          <div>
+            <div className="modtitle" style={{marginBottom:".15rem"}}>✦ Goal Fulfillment Plan</div>
+            <div style={{fontSize:".72rem",color:"rgba(232,224,208,.38)"}}>AI-powered analysis of your {goals.length} goal{goals.length!==1?"s":""}</div>
+          </div>
+          <div style={{display:"flex",gap:".4rem"}}>
+            <button onClick={generate} disabled={loading}
+              style={{background:"rgba(160,132,202,.12)",border:"1px solid rgba(160,132,202,.3)",color:"#a084ca",borderRadius:5,padding:".28rem .65rem",cursor:"pointer",fontSize:".68rem",fontFamily:"'DM Sans',sans-serif"}}>
+              {loading?"…":"⟳ Refresh"}
+            </button>
+            <button className="delbtn" style={{fontSize:"1rem"}} onClick={onClose}>✕</button>
+          </div>
+        </div>
+
+        {/* Goal priority summary */}
+        <div style={{display:"flex",gap:".4rem",flexWrap:"wrap",marginBottom:"1rem"}}>
+          {[...goals].sort((a,b)=>(a.priority||99)-(b.priority||99)).map((g,i)=>(
+            <div key={g.id} style={{display:"flex",alignItems:"center",gap:".35rem",padding:".28rem .65rem",
+              background:`${g.color}14`,border:`1px solid ${g.color}44`,borderRadius:12,fontSize:".68rem",color:g.color}}>
+              <div style={{width:6,height:6,borderRadius:"50%",background:g.color}}/>
+              P{g.priority||i+1} {g.name}
+            </div>
+          ))}
+        </div>
+
+        {/* Plan content */}
+        <div style={{background:"rgba(160,132,202,.04)",border:"1px solid rgba(160,132,202,.14)",borderRadius:8,
+          padding:"1rem 1.2rem",maxHeight:440,overflowY:"auto",minHeight:180,
+          display:"flex",alignItems:loading&&!plan?"center":"flex-start",justifyContent:loading&&!plan?"center":"flex-start"}}>
+          {loading&&!plan&&(
+            <div style={{textAlign:"center"}}>
+              <div style={{width:28,height:28,border:"2px solid rgba(160,132,202,.2)",borderTopColor:"#a084ca",borderRadius:"50%",animation:"spin 1s linear infinite",margin:"0 auto .75rem"}}/>
+              <div style={{fontSize:".78rem",color:"rgba(232,224,208,.35)"}}>Analysing your goals…</div>
+            </div>
+          )}
+          {error&&<div style={{color:"#e07c5a",fontSize:".8rem"}}>⚠ {error}</div>}
+          {plan&&(
+            <div style={{fontSize:".8rem",lineHeight:1.75,color:"rgba(232,224,208,.78)",whiteSpace:"pre-wrap",width:"100%"}}>
+              {plan}
+            </div>
+          )}
+        </div>
+
+        <div style={{marginTop:".75rem",textAlign:"right"}}>
+          <button className="btnc" onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
   );
 }
 
