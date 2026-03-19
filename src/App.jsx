@@ -649,6 +649,10 @@ export default function App() {
   const [txnHolding,     setTxnHolding]     = useState(null);
   const [txnForm,        setTxnForm]        = useState(BT);
   const [globalTxnModal, setGlobalTxnModal] = useState(false);
+  const [globalMfAmount,  setGlobalMfAmount]  = useState("");
+  const [globalMfNav,     setGlobalMfNav]     = useState(null);   // {nav, date, is_estimated}
+  const [globalNavLoading,setGlobalNavLoading]= useState(false);
+  const [globalNavError,  setGlobalNavError]  = useState("");
   const [txnFilterMember, setTxnFilterMember] = useState("all");
   const [txnFilterType,   setTxnFilterType]   = useState("ALL");
   const [mfSearch,       setMfSearch]       = useState("");
@@ -663,6 +667,14 @@ export default function App() {
   const [etfResults,     setEtfResults]     = useState([]);
   const [etfSearching,   setEtfSearching]   = useState(false);
   const [etfInfo,        setEtfInfo]        = useState(null);
+  const [stockSearch,    setStockSearch]    = useState("");
+  const [stockResults,   setStockResults]   = useState([]);
+  const [stockSearching, setStockSearching] = useState(false);
+  const [usSearch,       setUsSearch]       = useState("");
+  const [usResults,      setUsResults]      = useState([]);
+  const [usSearching,    setUsSearching]    = useState(false);
+  const stockSearchTimer = useRef();
+  const usSearchTimer    = useRef();
   const mfSearchTimer  = useRef();
   const stockLookTimer = useRef();
   const etfSearchTimer = useRef();
@@ -777,15 +789,28 @@ export default function App() {
 
   async function addTransaction(){
     if(!txnForm.holding_id){ alert("Select a holding"); return; }
-    if(!txnForm.units||!txnForm.price||!txnForm.txn_date){ alert("Fill in units, price, and date"); return; }
+    const selH = holdings.find(h=>h.id===txnForm.holding_id);
+    const isMFGlobal = selH?.type==="MF";
+
+    // For MF: derive units from amount + fetched NAV
+    let finalUnits = +txnForm.units;
+    let finalPrice = +txnForm.price;
+    if(isMFGlobal){
+      if(!globalMfAmount||!globalMfNav?.nav){ alert("Enter amount and fetch NAV first"); return; }
+      finalUnits = +(+globalMfAmount / globalMfNav.nav).toFixed(4);
+      finalPrice = +globalMfNav.nav;
+    } else {
+      if(!txnForm.units||!txnForm.price){ alert("Fill in units and price"); return; }
+    }
+    if(!txnForm.txn_date){ alert("Select a date"); return; }
     if(txnSaving.current) return;
     txnSaving.current = true;
     try{
       await api("/api/transactions",{method:"POST",body:JSON.stringify({
         holding_id: txnForm.holding_id,
         txn_type:   txnForm.txn_type,
-        units:      +txnForm.units,
-        price:      +txnForm.price,
+        units:      finalUnits,
+        price:      finalPrice,
         price_usd:  txnForm.price_usd ? +txnForm.price_usd : undefined,
         txn_date:   txnForm.txn_date,
         notes:      txnForm.notes||"",
@@ -793,7 +818,10 @@ export default function App() {
       const hlds = await api("/api/holdings");
       setHoldings(hlds||[]);
       if(txnHolding) setTxnHolding(hlds.find(h=>h.id===txnHolding.id)||null);
-      setTxnForm(BT);
+      // Reset MF amount state but keep holding_id for consecutive entries
+      const savedHoldingId = txnForm.holding_id;
+      setTxnForm({...BT, holding_id: savedHoldingId});
+      setGlobalMfAmount(""); setGlobalMfNav(null); setGlobalNavError("");
       setGlobalTxnModal(false);
     }catch(e){ alert("Failed: "+e.message); }
     finally{ txnSaving.current = false; }
@@ -1507,7 +1535,7 @@ ${alertLines||"  None"}`;
 
     {/* MODALS */}
     {modal==="holding"&&(
-      <Overlay onClose={()=>{setModal(null);setEditHolding(null);setForm(BF);setMfSearch("");setMfResults([]);setMfNav(null);setStockInfo(null);setEtfSearch("");setEtfResults([]);setEtfInfo(null);}}>
+      <Overlay onClose={()=>{setModal(null);setEditHolding(null);setForm(BF);setMfSearch("");setMfResults([]);setMfNav(null);setStockInfo(null);setStockSearch("");setStockResults([]);setUsSearch("");setUsResults([]);setEtfSearch("");setEtfResults([]);setEtfInfo(null);}}>
         <div className="modtitle">{editHolding?"Edit":"Add"} Holding</div>
         <div style={{fontSize:".75rem",color:"rgba(232,224,208,.38)",marginBottom:"1rem",lineHeight:1.6}}>
           {editHolding?"Update instrument details below.":"Register the instrument. Transactions (buy/sell) are added separately via the + Transaction button."}
@@ -1519,25 +1547,73 @@ ${alertLines||"  None"}`;
         <FG label="Name"><input className="fi" placeholder="e.g. Reliance Industries" value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))}/></FG>
         {form.type==="IN_STOCK"&&(
           <div style={{marginBottom:".85rem"}}>
-            <label className="flbl">NSE Ticker (for live prices)</label>
+            <label className="flbl">Search Indian Stock (name or NSE/BSE ticker)</label>
             <div style={{position:"relative"}}>
-              <input className="fi" placeholder="e.g. RELIANCE, HDFCBANK, TCS"
-                value={form.ticker||""}
-                onChange={e=>handleTickerChange(e.target.value,"IN")}
+              <input className="fi" placeholder="e.g. Reliance, HDFCBANK, Tata Motors…"
+                value={stockSearch}
+                onChange={e=>{
+                  const v=e.target.value;
+                  setStockSearch(v);
+                  setStockResults([]);
+                  setStockInfo(null);
+                  clearTimeout(stockSearchTimer.current);
+                  if(v.length<2){setStockSearching(false);return;}
+                  setStockSearching(true);
+                  stockSearchTimer.current=setTimeout(async()=>{
+                    try{
+                      const r=await api(`/api/stock/search?q=${encodeURIComponent(v)}&market=IN`);
+                      setStockResults(r||[]);
+                    }catch{setStockResults([]);}
+                    setStockSearching(false);
+                  },350);
+                }}
+                autoComplete="off"
               />
-              {stockLooking&&<div style={{position:"absolute",right:".7rem",top:"50%",transform:"translateY(-50%)",fontSize:".7rem",color:"rgba(232,224,208,.4)"}}>Looking up…</div>}
+              {stockSearching&&<div style={{position:"absolute",right:".7rem",top:"50%",transform:"translateY(-50%)",fontSize:".7rem",color:"rgba(232,224,208,.4)"}}>Searching…</div>}
             </div>
+            {stockResults.length>0&&(
+              <div style={{background:"#0c1526",border:"1px solid rgba(224,124,90,.2)",borderRadius:"0 0 8px 8px",maxHeight:220,overflowY:"auto",marginTop:"-1px"}}>
+                {stockResults.map(s=>(
+                  <div key={s.ticker}
+                    onClick={async()=>{
+                      setStockSearch(s.name);
+                      setStockResults([]);
+                      setForm(f=>({...f,name:s.name,ticker:s.ticker}));
+                      try{
+                        const info=await api(`/api/stock/info?ticker=${encodeURIComponent(s.ticker)}&market=IN`);
+                        setStockInfo(info);
+                        if(info.found&&info.name) setForm(f=>({...f,name:info.name,ticker:s.ticker}));
+                      }catch{setStockInfo({found:false});}
+                    }}
+                    style={{padding:".6rem .85rem",cursor:"pointer",borderBottom:"1px solid rgba(255,255,255,.05)",fontSize:".8rem",lineHeight:1.4}}
+                    onMouseEnter={x=>x.currentTarget.style.background="rgba(224,124,90,.08)"}
+                    onMouseLeave={x=>x.currentTarget.style.background="transparent"}>
+                    <div style={{color:"#e8e0d0",marginBottom:".12rem"}}>{s.name}</div>
+                    <div style={{fontSize:".67rem",color:"rgba(232,224,208,.35)",fontFamily:"'DM Mono',monospace"}}>{s.ticker} · {s.exchange}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {!stockSearching&&stockSearch.length>=2&&stockResults.length===0&&!stockInfo&&(
+              <div style={{marginTop:".45rem",fontSize:".72rem",color:"rgba(232,224,208,.32)"}}>
+                No results — try ticker directly:&nbsp;
+                <input className="fi" style={{display:"inline",width:130,padding:".28rem .5rem",fontSize:".72rem"}}
+                  placeholder="e.g. RELIANCE"
+                  onChange={e=>{
+                    const t=e.target.value.toUpperCase();
+                    setForm(f=>({...f,ticker:t}));
+                    handleTickerChange(t,"IN");
+                  }}/>
+              </div>
+            )}
             {stockInfo&&stockInfo.found&&(
               <div style={{marginTop:".5rem",padding:".6rem .85rem",background:"rgba(224,124,90,.07)",border:"1px solid rgba(224,124,90,.22)",borderRadius:7,fontSize:".75rem",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                 <div>
                   <div style={{color:"#e07c5a",fontWeight:500}}>{stockInfo.name}</div>
-                  <div style={{color:"rgba(232,224,208,.38)",fontSize:".67rem"}}>{stockInfo.exchange} · {form.ticker}.NS</div>
+                  <div style={{color:"rgba(232,224,208,.38)",fontSize:".67rem"}}>{stockInfo.exchange} · {form.ticker} · NSE/BSE</div>
                 </div>
                 {stockInfo.price&&<div style={{fontFamily:"'DM Mono',monospace",color:"#c9a84c",fontSize:".9rem"}}>₹{stockInfo.price.toLocaleString("en-IN",{maximumFractionDigits:2})}</div>}
               </div>
-            )}
-            {stockInfo&&!stockInfo.found&&form.ticker&&!stockLooking&&(
-              <div style={{marginTop:".5rem",fontSize:".72rem",color:"rgba(224,124,90,.6)"}}>⚠ Ticker not found on NSE — check spelling</div>
             )}
           </div>
         )}
@@ -1602,17 +1678,82 @@ ${alertLines||"  None"}`;
         )}
         {form.type==="US_STOCK"&&(
           <div style={{marginBottom:".85rem"}}>
-            <div className="frow">
-              <div>
-                <label className="flbl">US Ticker</label>
-                <div style={{position:"relative"}}>
-                  <input className="fi" placeholder="e.g. AAPL, NVDA, MSFT"
-                    value={form.ticker||""}
-                    onChange={e=>handleTickerChange(e.target.value,"US")}
-                  />
-                  {stockLooking&&<div style={{position:"absolute",right:".7rem",top:"50%",transform:"translateY(-50%)",fontSize:".7rem",color:"rgba(232,224,208,.4)"}}>Looking up…</div>}
+            <label className="flbl">Search US Stock (company name or ticker)</label>
+            <div style={{position:"relative"}}>
+              <input className="fi" placeholder="e.g. Apple, NVDA, Microsoft, Tesla…"
+                value={usSearch}
+                onChange={e=>{
+                  const v=e.target.value;
+                  setUsSearch(v);
+                  setUsResults([]);
+                  setStockInfo(null);
+                  clearTimeout(usSearchTimer.current);
+                  if(v.length<2){setUsSearching(false);return;}
+                  setUsSearching(true);
+                  usSearchTimer.current=setTimeout(async()=>{
+                    try{
+                      const r=await api(`/api/stock/search?q=${encodeURIComponent(v)}&market=US`);
+                      setUsResults(r||[]);
+                    }catch{setUsResults([]);}
+                    setUsSearching(false);
+                  },350);
+                }}
+                autoComplete="off"
+              />
+              {usSearching&&<div style={{position:"absolute",right:".7rem",top:"50%",transform:"translateY(-50%)",fontSize:".7rem",color:"rgba(232,224,208,.4)"}}>Searching…</div>}
+            </div>
+            {usResults.length>0&&(
+              <div style={{background:"#0c1526",border:"1px solid rgba(90,156,224,.2)",borderRadius:"0 0 8px 8px",maxHeight:220,overflowY:"auto",marginTop:"-1px"}}>
+                {usResults.map(s=>(
+                  <div key={s.ticker}
+                    onClick={async()=>{
+                      setUsSearch(s.name);
+                      setUsResults([]);
+                      setForm(f=>({...f,name:s.name,ticker:s.ticker}));
+                      try{
+                        const info=await api(`/api/stock/info?ticker=${encodeURIComponent(s.ticker)}&market=US`);
+                        setStockInfo(info);
+                        if(info.found&&info.name) setForm(f=>({...f,name:info.name,ticker:s.ticker}));
+                      }catch{setStockInfo({found:false});}
+                    }}
+                    style={{padding:".6rem .85rem",cursor:"pointer",borderBottom:"1px solid rgba(255,255,255,.05)",fontSize:".8rem",lineHeight:1.4}}
+                    onMouseEnter={x=>x.currentTarget.style.background="rgba(90,156,224,.08)"}
+                    onMouseLeave={x=>x.currentTarget.style.background="transparent"}>
+                    <div style={{color:"#e8e0d0",marginBottom:".12rem"}}>{s.name}</div>
+                    <div style={{fontSize:".67rem",color:"rgba(232,224,208,.35)",fontFamily:"'DM Mono',monospace"}}>{s.ticker} · {s.exchange}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {!usSearching&&usSearch.length>=2&&usResults.length===0&&!stockInfo&&(
+              <div style={{marginTop:".45rem",fontSize:".72rem",color:"rgba(232,224,208,.32)"}}>
+                No results — enter ticker directly:&nbsp;
+                <input className="fi" style={{display:"inline",width:120,padding:".28rem .5rem",fontSize:".72rem"}}
+                  placeholder="e.g. AAPL"
+                  onChange={e=>{
+                    const t=e.target.value.toUpperCase();
+                    setForm(f=>({...f,ticker:t}));
+                    handleTickerChange(t,"US");
+                  }}/>
+              </div>
+            )}
+            {stockInfo&&stockInfo.found&&(
+              <div style={{marginTop:".5rem",padding:".6rem .85rem",background:"rgba(90,156,224,.07)",border:"1px solid rgba(90,156,224,.22)",borderRadius:7,fontSize:".75rem"}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:".4rem"}}>
+                  <div>
+                    <div style={{color:"#5a9ce0",fontWeight:500}}>{stockInfo.name}</div>
+                    <div style={{color:"rgba(232,224,208,.38)",fontSize:".67rem"}}>{stockInfo.exchange} · {form.ticker} · {stockInfo.currency}</div>
+                  </div>
+                  {stockInfo.price&&(
+                    <div style={{textAlign:"right"}}>
+                      <div style={{fontFamily:"'DM Mono',monospace",color:"#c9a84c",fontSize:".9rem"}}>${stockInfo.price.toLocaleString("en-US",{maximumFractionDigits:2})}</div>
+                      <div style={{fontFamily:"'DM Mono',monospace",color:"rgba(232,224,208,.45)",fontSize:".72rem"}}>₹{(stockInfo.price*(+form.usd_inr_rate||83.2)).toLocaleString("en-IN",{maximumFractionDigits:0})}</div>
+                    </div>
+                  )}
                 </div>
               </div>
+            )}
+            <div className="frow" style={{marginTop:".7rem"}}>
               <div>
                 <label className="flbl">USD/INR Rate</label>
                 <div style={{position:"relative"}}>
@@ -1623,28 +1764,9 @@ ${alertLines||"  None"}`;
                     {usdInrLoading?"…":"⟳ Live"}
                   </button>
                 </div>
-                <div style={{fontSize:".65rem",color:"rgba(232,224,208,.3)",marginTop:".2rem"}}>
-                  1 USD = ₹{(+form.usd_inr_rate||83.2).toFixed(2)}
-                </div>
+                <div style={{fontSize:".65rem",color:"rgba(232,224,208,.3)",marginTop:".2rem"}}>1 USD = ₹{(+form.usd_inr_rate||83.2).toFixed(2)}</div>
               </div>
             </div>
-            {stockInfo&&stockInfo.found&&(
-              <div style={{marginTop:".5rem",padding:".6rem .85rem",background:"rgba(90,156,224,.07)",border:"1px solid rgba(90,156,224,.22)",borderRadius:7,fontSize:".75rem",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                <div>
-                  <div style={{color:"#5a9ce0",fontWeight:500}}>{stockInfo.name}</div>
-                  <div style={{color:"rgba(232,224,208,.38)",fontSize:".67rem"}}>{stockInfo.exchange} · {stockInfo.currency}</div>
-                </div>
-                {stockInfo.price&&(
-                  <div style={{textAlign:"right"}}>
-                    <div style={{fontFamily:"'DM Mono',monospace",color:"#c9a84c",fontSize:".9rem"}}>${stockInfo.price.toLocaleString("en-US",{maximumFractionDigits:2})}</div>
-                    <div style={{fontFamily:"'DM Mono',monospace",color:"rgba(232,224,208,.45)",fontSize:".72rem"}}>₹{(stockInfo.price*(+form.usd_inr_rate||83.2)).toLocaleString("en-IN",{maximumFractionDigits:0})}</div>
-                  </div>
-                )}
-              </div>
-            )}
-            {stockInfo&&!stockInfo.found&&form.ticker&&!stockLooking&&(
-              <div style={{marginTop:".5rem",fontSize:".72rem",color:"rgba(224,124,90,.6)"}}>⚠ Ticker not found — check spelling</div>
-            )}
           </div>
         )}
         {form.type==="MF"&&(
@@ -1717,7 +1839,7 @@ ${alertLines||"  None"}`;
             ✓ After saving, "+ Transaction" will open automatically to record your first buy.
           </div>
         )}
-        <MA><button className="btnc" onClick={()=>{setModal(null);setEditHolding(null);setForm(BF);setMfSearch("");setMfResults([]);setMfNav(null);setStockInfo(null);setEtfSearch("");setEtfResults([]);setEtfInfo(null);}}>Cancel</button><button className="btns" onClick={saveHolding} disabled={!form.name||!form.member_id}>{editHolding?"Save Changes":"Add Holding"}</button></MA>
+        <MA><button className="btnc" onClick={()=>{setModal(null);setEditHolding(null);setForm(BF);setMfSearch("");setMfResults([]);setMfNav(null);setStockInfo(null);setStockSearch("");setStockResults([]);setUsSearch("");setUsResults([]);setEtfSearch("");setEtfResults([]);setEtfInfo(null);}}>Cancel</button><button className="btns" onClick={saveHolding} disabled={!form.name||!form.member_id}>{editHolding?"Save Changes":"Add Holding"}</button></MA>
       </Overlay>
     )}
 
@@ -1742,14 +1864,14 @@ ${alertLines||"  None"}`;
         <div style={{display:"flex",gap:".6rem",marginBottom:"1rem",padding:".75rem",background:"rgba(255,255,255,.02)",border:"1px solid rgba(255,255,255,.06)",borderRadius:8}}>
           <div style={{flex:1}}>
             <div style={{fontSize:".63rem",letterSpacing:".08em",textTransform:"uppercase",color:"rgba(232,224,208,.35)",marginBottom:".35rem"}}>Member</div>
-            <select className="fi fs" style={{marginBottom:0}} value={txnFilterMember} onChange={e=>{setTxnFilterMember(e.target.value);setTxnForm(p=>({...p,holding_id:"",price:"",price_usd:""}));}}>
+            <select className="fi fs" style={{marginBottom:0}} value={txnFilterMember} onChange={e=>{setTxnFilterMember(e.target.value);setTxnForm(p=>({...p,holding_id:"",price:"",price_usd:"",units:""}));setGlobalMfAmount("");setGlobalMfNav(null);setGlobalNavError("");}}>
               <option value="all">All Members</option>
               {members.map(m=><option key={m.id} value={m.id}>{m.name}</option>)}
             </select>
           </div>
           <div style={{flex:1}}>
             <div style={{fontSize:".63rem",letterSpacing:".08em",textTransform:"uppercase",color:"rgba(232,224,208,.35)",marginBottom:".35rem"}}>Asset Type</div>
-            <select className="fi fs" style={{marginBottom:0}} value={txnFilterType} onChange={e=>{setTxnFilterType(e.target.value);setTxnForm(p=>({...p,holding_id:"",price:"",price_usd:""}));}}>
+            <select className="fi fs" style={{marginBottom:0}} value={txnFilterType} onChange={e=>{setTxnFilterType(e.target.value);setTxnForm(p=>({...p,holding_id:"",price:"",price_usd:"",units:""}));setGlobalMfAmount("");setGlobalMfNav(null);setGlobalNavError("");}}>
               <option value="ALL">All Types</option>
               {["IN_STOCK","IN_ETF","MF","US_STOCK"].map(t=><option key={t} value={t}>{AT[t].icon} {AT[t].label}</option>)}
             </select>
@@ -1759,7 +1881,8 @@ ${alertLines||"  None"}`;
         <FG label={`Holding ${filteredHoldings.length>0?`(${filteredHoldings.length} shown)`:""}`}>
           <select className="fi fs" value={txnForm.holding_id} onChange={e=>{
             const h=holdings.find(x=>x.id===e.target.value);
-            setTxnForm(p=>({...p,holding_id:e.target.value,price:"",price_usd:""}));
+            setTxnForm(p=>({...p,holding_id:e.target.value,price:"",price_usd:"",units:""}));
+            setGlobalMfAmount(""); setGlobalMfNav(null); setGlobalNavError("");
             if(h?.type==="US_STOCK") fetchUsdInr();
           }}>
             <option value="">Select holding…</option>
@@ -1777,21 +1900,91 @@ ${alertLines||"  None"}`;
               <option value="SELL">SELL</option>
             </select>
           </FG>
-          <FG label="Units"><input type="number" className="fi" placeholder="e.g. 50" value={txnForm.units} onChange={e=>setTxnForm(p=>({...p,units:e.target.value}))}/></FG>
-          {isUS ? (
-            <FG label="Price $ per unit (USD)">
+          {/* MF: amount-first flow */}
+          {selHolding?.type==="MF" ? (
+            <FG label="Amount Invested ₹">
+              <input type="number" className="fi" placeholder="e.g. 5000"
+                value={globalMfAmount}
+                onChange={e=>{setGlobalMfAmount(e.target.value);setGlobalMfNav(null);setGlobalNavError("");}}
+              />
+            </FG>
+          ) : isUS ? (
+            <FG label="Price $ per unit">
               <input type="number" className="fi" placeholder="e.g. 189.50" value={txnForm.price_usd||""} onChange={e=>{
-                const usd = e.target.value;
-                const inr = usd ? (+usd * fxRate).toFixed(2) : "";
-                setTxnForm(p=>({...p, price_usd: usd, price: inr}));
+                const usd=e.target.value;
+                setTxnForm(p=>({...p,price_usd:usd,price:usd?(+usd*fxRate).toFixed(2):""}));
               }}/>
             </FG>
           ) : (
-            <FG label={selHolding?.type==="MF"?"NAV ₹ per unit":"Price ₹ per unit"}>
+            <FG label="Price ₹ per unit">
               <input type="number" className="fi" placeholder="e.g. 2450" value={txnForm.price} onChange={e=>setTxnForm(p=>({...p,price:e.target.value}))}/>
             </FG>
           )}
+          {/* Non-MF units */}
+          {selHolding?.type!=="MF"&&(
+            <FG label="Units">
+              <input type="number" className="fi" placeholder="e.g. 50" value={txnForm.units} onChange={e=>setTxnForm(p=>({...p,units:e.target.value}))}/>
+            </FG>
+          )}
         </div>
+        {/* MF: date + fetch NAV row */}
+        {selHolding?.type==="MF"&&(
+          <div style={{marginBottom:".85rem"}}>
+            <FG label="Date">
+              <input type="date" className="fi" value={txnForm.txn_date}
+                onChange={e=>{setTxnForm(p=>({...p,txn_date:e.target.value}));setGlobalMfNav(null);setGlobalNavError("");}}
+              />
+            </FG>
+            <div style={{display:"flex",alignItems:"center",gap:".6rem",marginTop:".5rem",padding:".6rem .85rem",
+              background:"rgba(160,132,202,.06)",border:"1px solid rgba(160,132,202,.18)",borderRadius:7}}>
+              <div style={{flex:1,fontSize:".75rem",color:"rgba(232,224,208,.45)"}}>
+                {globalMfNav
+                  ? <><span style={{color:"#a084ca",fontWeight:500}}>NAV: ₹{globalMfNav.nav?.toFixed(4)}</span>
+                      <span style={{marginLeft:".5rem",color:"rgba(232,224,208,.35)",fontSize:".68rem"}}>
+                        {globalMfNav.is_estimated?"Est. ":"Exact "}{globalMfNav.date}
+                      </span>
+                    </>
+                  : (txnForm.txn_date?"Click Fetch NAV to get NAV for this date":"Select a date first")}
+              </div>
+              <button onClick={async()=>{
+                if(!txnForm.txn_date||!selHolding?.scheme_code) return;
+                setGlobalNavLoading(true); setGlobalNavError("");
+                try{
+                  const d=new Date(txnForm.txn_date);
+                  const res=await api("/api/mf/sip-navs",{method:"POST",body:JSON.stringify({
+                    scheme_code:selHolding.scheme_code,
+                    months:[{year:d.getFullYear(),month:d.getMonth()+1,sip_date:d.getDate()}]
+                  })});
+                  const r=res.results?.[0];
+                  if(r?.nav){
+                    setGlobalMfNav({nav:r.nav,date:r.nav_date,is_estimated:r.is_estimated});
+                    if(globalMfAmount) setTxnForm(p=>({...p,units:(+globalMfAmount/r.nav).toFixed(4),price:r.nav.toString()}));
+                  } else { setGlobalNavError("NAV not found for this date"); }
+                }catch(e){ setGlobalNavError(e.message); }
+                setGlobalNavLoading(false);
+              }} disabled={globalNavLoading||!txnForm.txn_date}
+                style={{background:"rgba(160,132,202,.15)",border:"1px solid rgba(160,132,202,.3)",color:"#a084ca",
+                  borderRadius:5,padding:".32rem .75rem",cursor:"pointer",fontSize:".72rem",
+                  fontFamily:"'DM Sans',sans-serif",whiteSpace:"nowrap",flexShrink:0,
+                  opacity:(!txnForm.txn_date||globalNavLoading)?.5:1}}>
+                {globalNavLoading?"…":"⟳ Fetch NAV"}
+              </button>
+            </div>
+            {globalNavError&&<div style={{marginTop:".3rem",fontSize:".68rem",color:"rgba(224,124,90,.7)"}}>⚠ {globalNavError}</div>}
+            {/* Units preview */}
+            {globalMfNav&&globalMfAmount&&(
+              <div style={{marginTop:".5rem",display:"flex",gap:"1.5rem",padding:".55rem .85rem",
+                background:"rgba(255,255,255,.03)",border:"1px solid rgba(255,255,255,.06)",borderRadius:6,fontSize:".72rem"}}>
+                <div><div style={{color:"rgba(232,224,208,.35)",marginBottom:".15rem"}}>Amount</div>
+                  <div style={{fontFamily:"'DM Mono',monospace",color:"#c9a84c"}}>₹{Number(globalMfAmount).toLocaleString("en-IN")}</div></div>
+                <div><div style={{color:"rgba(232,224,208,.35)",marginBottom:".15rem"}}>Units Allotted</div>
+                  <div style={{fontFamily:"'DM Mono',monospace",color:"#e8e0d0"}}>{(+globalMfAmount/globalMfNav.nav).toFixed(4)}</div></div>
+                <div><div style={{color:"rgba(232,224,208,.35)",marginBottom:".15rem"}}>NAV</div>
+                  <div style={{fontFamily:"'DM Mono',monospace",color:"#e8e0d0"}}>₹{globalMfNav.nav?.toFixed(4)}</div></div>
+              </div>
+            )}
+          </div>
+        )}
         {/* USD/INR info row for US stocks */}
         {isUS&&(
           <div style={{display:"flex",alignItems:"center",gap:".75rem",marginBottom:".85rem",padding:".6rem .85rem",background:"rgba(90,156,224,.06)",border:"1px solid rgba(90,156,224,.2)",borderRadius:7}}>
@@ -1812,7 +2005,9 @@ ${alertLines||"  None"}`;
           </div>
         )}
         <div className="frow">
-          <FG label="Date"><input type="date" className="fi" value={txnForm.txn_date} onChange={e=>setTxnForm(p=>({...p,txn_date:e.target.value}))}/></FG>
+          {selHolding?.type!=="MF"&&(
+            <FG label="Date"><input type="date" className="fi" value={txnForm.txn_date} onChange={e=>setTxnForm(p=>({...p,txn_date:e.target.value}))}/></FG>
+          )}
           <FG label="Notes (optional)"><input className="fi" placeholder="e.g. SIP, bonus, tax harvesting" value={txnForm.notes} onChange={e=>setTxnForm(p=>({...p,notes:e.target.value}))}/></FG>
         </div>
         {/* Total value summary */}
@@ -1837,8 +2032,11 @@ ${alertLines||"  None"}`;
           </div>
         )}
         <MA>
-          <button className="btnc" onClick={()=>setGlobalTxnModal(false)}>Cancel</button>
-          <button className="btns" onClick={addTransaction} disabled={!txnForm.holding_id||!txnForm.units||!txnForm.price||!txnForm.txn_date}>Save Transaction</button>
+          <button className="btnc" onClick={()=>{setGlobalTxnModal(false);setGlobalMfAmount("");setGlobalMfNav(null);setGlobalNavError("");}}>Cancel</button>
+          <button className="btns" onClick={addTransaction}
+            disabled={!txnForm.holding_id||!txnForm.txn_date||(selHolding?.type==="MF"?(!globalMfAmount||!globalMfNav?.nav):(!txnForm.units||!txnForm.price))}>
+            Save Transaction
+          </button>
         </MA>
       </Overlay>
       );
