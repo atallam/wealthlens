@@ -618,6 +618,21 @@ function ArtifactPanel({ holding, token, onClose }) {
 /* ══════════════════════════════════════════════
    MAIN APP
 ══════════════════════════════════════════════ */
+// ── Formatted INR input — shows live comma-formatted preview ──────
+function FmtInput({value, onChange, placeholder, className, style}){
+  const num = value !== "" && !isNaN(+value) ? +value : null;
+  const display = num !== null ? "₹"+num.toLocaleString("en-IN",{maximumFractionDigits:2}) : "";
+  return(
+    <div style={{position:"relative",paddingBottom:display?"1.1rem":0}}>
+      <input type="number" className={className||"fi"} placeholder={placeholder} value={value}
+        onChange={onChange} style={style}/>
+      {display&&<div style={{position:"absolute",bottom:0,left:0,fontSize:".63rem",color:"rgba(201,168,76,.65)",fontFamily:"'DM Mono',monospace",pointerEvents:"none",letterSpacing:".02em"}}>
+        {display}
+      </div>}
+    </div>
+  );
+}
+
 export default function App() {
   const [user,      setUser]      = useState(null);
   const [authErr,   setAuthErr]   = useState("");
@@ -677,7 +692,14 @@ export default function App() {
   const [benchmarkData,     setBenchmarkData]     = useState([]);
   const [benchmarkLoading,  setBenchmarkLoading]  = useState(false);
   const [benchmarkPeriod,   setBenchmarkPeriod]   = useState("1Y");
+  const [nwMember,          setNwMember]          = useState("all");
+  const [benchmarkMember,   setBenchmarkMember]   = useState("all");
   const [calMonth,          setCalMonth]          = useState(()=>{const d=new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;});
+
+  // ── Rebalancing state ────────────────────────────────────────
+  const [targetAlloc, setTargetAlloc] = useState({IN_STOCK:40,MF:30,IN_ETF:10,US_STOCK:10,FD:5,PPF:3,EPF:2,REAL_ESTATE:0});
+  const [rebalMember, setRebalMember] = useState("all");
+  const [rebalCash,   setRebalCash]   = useState("");
   const [txnFilterMember, setTxnFilterMember] = useState("all");
   const [txnFilterType,   setTxnFilterType]   = useState("ALL");
   const [mfSearch,       setMfSearch]       = useState("");
@@ -1180,7 +1202,7 @@ ${alertLines||"  None"}`;
 
         {/* Tabs */}
         <div className="tabs">
-          {["overview","holdings","goals","alerts","members","budget","calendar","ask"].map(t=>(
+          {["overview","holdings","goals","alerts","members","budget","calendar","rebalance","ask"].map(t=>(
             <div key={t} className={`tab${tab===t?" act":""}`} onClick={()=>setTab(t)}>
               {t==="alerts"&&trigAlerts.length>0?<span>{t} <span className="tbadge">{trigAlerts.length}</span></span>
                :t==="ask"?<span style={{display:"flex",alignItems:"center",gap:".35rem"}}>✦ Advisor</span>
@@ -1226,120 +1248,173 @@ ${alertLines||"  None"}`;
 
           {/* ── NET WORTH TIMELINE ── */}
           {(()=>{
-            // Build timeline from all transactions across all holdings
-            const events = [];
-            for(const h of holdings){
+            const nwHoldings = nwMember==="all" ? holdings : holdings.filter(h=>h.member_id===nwMember);
+            const nwCur = nwHoldings.reduce((s,h)=>s+getVal(h),0);
+            const nwInv = nwHoldings.reduce((s,h)=>s+getInv(h),0);
+
+            // Build cumulative invested per month from transactions
+            const monthlyInv = {};
+            for(const h of nwHoldings){
               for(const t of (h.transactions||[])){
-                const cost = (t.txn_type==="BUY" ? 1 : -1) * (+t.units) * (+t.price);
-                events.push({date:t.txn_date, delta:cost});
+                const mo=t.txn_date.slice(0,7);
+                const delta=(t.txn_type==="BUY"?1:-1)*(+t.units)*(+t.price);
+                monthlyInv[mo]=(monthlyInv[mo]||0)+delta;
+              }
+              if(["FD","PPF","EPF","REAL_ESTATE"].includes(h.type)&&h.start_date){
+                const mo=h.start_date.slice(0,7);
+                monthlyInv[mo]=(monthlyInv[mo]||0)+getInv(h);
               }
             }
-            events.sort((a,b)=>a.date.localeCompare(b.date));
-            // Monthly cumulative invested
-            const monthlyInv = {};
-            let cumInv = 0;
-            for(const e of events){
-              const mo = e.date.slice(0,7);
-              cumInv += e.delta;
-              monthlyInv[mo] = cumInv;
-            }
-            // Add static holdings (FD/PPF/REAL_ESTATE) using start_date
-            for(const h of holdings){
-              if(!["FD","PPF","EPF","REAL_ESTATE"].includes(h.type)) continue;
-              if(!h.start_date) continue;
-              const mo = h.start_date.slice(0,7);
-              monthlyInv[mo] = (monthlyInv[mo]||0) + getInv(h);
-            }
-            // Build timeline array — last 24 months
-            const months = Object.keys(monthlyInv).sort();
-            const last24 = months.slice(-24);
-            if(last24.length < 2) return null;
-            // Current value is allCur — we don't have historical prices, so show invested curve + today's value marker
-            const maxInv = Math.max(...last24.map(m=>monthlyInv[m]),allCur);
-            const W=520,H=140,pad={l:48,r:16,t:10,b:28};
+            // Convert to cumulative
+            const sortedMos = Object.keys(monthlyInv).sort();
+            let cum=0; const cumByMo={};
+            for(const mo of sortedMos){ cum+=monthlyInv[mo]; cumByMo[mo]=Math.max(0,cum); }
+            const last24=sortedMos.slice(-24);
+            if(last24.length<2) return null;
+
+            const [hovIdx,setHovIdx]=window.__nwHov||[null,null];
+            const maxV=Math.max(...last24.map(m=>cumByMo[m]),nwCur)*1.05;
+            const W=580,H=180,pad={l:58,r:16,t:14,b:32};
             const iW=W-pad.l-pad.r,iH=H-pad.t-pad.b;
-            const xPos=(i)=>pad.l+i*(iW/(last24.length-1));
-            const yPos=(v)=>pad.t+iH-((v/maxInv)*iH);
-            const invPoints=last24.map((m,i)=>`${xPos(i)},${yPos(monthlyInv[m]||0)}`).join(" ");
-            // Labels every 6 months
-            const labels=last24.filter((_,i)=>i===0||i===last24.length-1||(i%6===0));
+            const xPos=(i)=>pad.l+i*(iW/Math.max(last24.length-1,1));
+            const yPos=(v)=>pad.t+iH-((v/maxV)*iH);
+            const pts=last24.map((m,i)=>`${xPos(i)},${yPos(cumByMo[m]||0)}`).join(" ");
+            const labels=last24.filter((_,i)=>i===0||(i%4===0)||i===last24.length-1);
+
             return(
             <div className="card">
-              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:".85rem"}}>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:".85rem",flexWrap:"wrap",gap:".5rem"}}>
                 <div className="ctitle" style={{margin:0}}>Net Worth Timeline</div>
-                <div style={{display:"flex",gap:".35rem",alignItems:"center",fontSize:".68rem",color:"rgba(232,224,208,.4)"}}>
-                  <div style={{width:12,height:2,background:"#c9a84c",borderRadius:1}}/>Invested
-                  <div style={{width:8,height:8,borderRadius:"50%",background:"#4caf9a",marginLeft:".3rem"}}/>Today ₹{fmtCr(allCur)}
+                <div style={{display:"flex",gap:".5rem",alignItems:"center"}}>
+                  <select className="fi fs" style={{width:140,marginBottom:0,fontSize:".72rem",padding:".28rem .6rem"}}
+                    value={nwMember} onChange={e=>setNwMember(e.target.value)}>
+                    <option value="all">All Members</option>
+                    {members.map(m=><option key={m.id} value={m.id}>{m.name}</option>)}
+                  </select>
                 </div>
               </div>
-              <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%",height:"auto"}}>
+              <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%",height:"auto",overflow:"visible"}}
+                onMouseLeave={()=>{if(window.__nwSetHov)window.__nwSetHov(null);}}>
                 <defs>
-                  <linearGradient id="invGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#c9a84c" stopOpacity="0.25"/>
-                    <stop offset="100%" stopColor="#c9a84c" stopOpacity="0"/>
+                  <linearGradient id="nwGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#c9a84c" stopOpacity="0.3"/>
+                    <stop offset="100%" stopColor="#c9a84c" stopOpacity="0.02"/>
                   </linearGradient>
                 </defs>
-                {/* Grid lines */}
+                {/* Y grid + labels */}
                 {[0,.25,.5,.75,1].map(p=>{
-                  const y=pad.t+iH*p;
+                  const y=pad.t+iH*(1-p);
                   return <g key={p}>
-                    <line x1={pad.l} y1={y} x2={W-pad.r} y2={y} stroke="rgba(255,255,255,.05)" strokeWidth="1"/>
-                    <text x={pad.l-4} y={y+4} textAnchor="end" fill="rgba(232,224,208,.25)" fontSize="8">
-                      {fmtCr(maxInv*(1-p))}
+                    <line x1={pad.l} y1={y} x2={W-pad.r} y2={y} stroke="rgba(255,255,255,.06)" strokeWidth="1"/>
+                    <text x={pad.l-6} y={y+4} textAnchor="end" fill="rgba(232,224,208,.3)" fontSize="9" fontFamily="'DM Mono',monospace">
+                      {fmtCr(maxV*p)}
                     </text>
                   </g>;
                 })}
-                {/* Filled area under invested curve */}
-                <polygon points={`${pad.l},${pad.t+iH} ${invPoints} ${xPos(last24.length-1)},${pad.t+iH}`} fill="url(#invGrad)"/>
-                {/* Invested line */}
-                <polyline points={invPoints} fill="none" stroke="#c9a84c" strokeWidth="1.8" strokeLinejoin="round"/>
-                {/* Today marker */}
-                <circle cx={xPos(last24.length-1)} cy={yPos(allCur)} r="4" fill="#4caf9a"/>
-                <line x1={xPos(last24.length-1)} y1={yPos(monthlyInv[last24[last24.length-1]]||0)} x2={xPos(last24.length-1)} y2={yPos(allCur)} stroke="#4caf9a" strokeWidth="1" strokeDasharray="3,2"/>
-                {/* X axis labels */}
+                {/* Area fill */}
+                <polygon points={`${pad.l},${pad.t+iH} ${pts} ${xPos(last24.length-1)},${pad.t+iH}`} fill="url(#nwGrad)"/>
+                {/* Main line */}
+                <polyline points={pts} fill="none" stroke="#c9a84c" strokeWidth="2" strokeLinejoin="round"/>
+                {/* Today dot */}
+                <circle cx={xPos(last24.length-1)} cy={yPos(nwCur)} r="5" fill="#4caf9a" stroke="#0c1526" strokeWidth="1.5"/>
+                <line x1={xPos(last24.length-1)} y1={yPos(cumByMo[last24[last24.length-1]]||0)}
+                  x2={xPos(last24.length-1)} y2={yPos(nwCur)}
+                  stroke="#4caf9a" strokeWidth="1.2" strokeDasharray="3,2"/>
+                {/* Hover dots with value tooltip */}
                 {last24.map((m,i)=>{
-                  if(!labels.includes(m)) return null;
-                  return <text key={m} x={xPos(i)} y={H-4} textAnchor="middle" fill="rgba(232,224,208,.28)" fontSize="8">
-                    {new Date(m+"-01").toLocaleDateString("en-IN",{month:"short",year:"2-digit"})}
-                  </text>;
+                  const v=cumByMo[m]||0;
+                  const cx=xPos(i),cy=yPos(v);
+                  return <g key={m}>
+                    <circle cx={cx} cy={cy} r="4" fill="#c9a84c" opacity="0" style={{cursor:"crosshair"}}
+                      onMouseEnter={()=>{if(window.__nwSetHov)window.__nwSetHov(i);}}/>
+                    {/* Always show value above dot for every other point */}
+                    {(i%2===0||i===last24.length-1)&&(
+                      <text x={cx} y={cy-8} textAnchor="middle" fill="rgba(201,168,76,.7)" fontSize="7.5" fontFamily="'DM Mono',monospace">
+                        {fmtCr(v)}
+                      </text>
+                    )}
+                  </g>;
                 })}
+                {/* X labels */}
+                {last24.map((m,i)=>labels.includes(m)?(
+                  <text key={m} x={xPos(i)} y={H-4} textAnchor="middle" fill="rgba(232,224,208,.32)" fontSize="8.5">
+                    {new Date(m+"-01").toLocaleDateString("en-IN",{month:"short",year:"2-digit"})}
+                  </text>
+                ):null)}
               </svg>
-              <div style={{fontSize:".68rem",color:"rgba(232,224,208,.3)",marginTop:".4rem"}}>
-                Gain since start: <span style={{color:allCur>allInv?"#4caf9a":"#e07c5a",fontFamily:"'DM Mono',monospace"}}>{fmtCr(allCur-allInv)} ({fmtPct(allInv>0?(allCur-allInv)/allInv*100:0)})</span>
+              <div style={{display:"flex",gap:"1.5rem",marginTop:".6rem",fontSize:".72rem"}}>
+                <div><span style={{color:"rgba(232,224,208,.35)"}}>Invested: </span><span style={{fontFamily:"'DM Mono',monospace",color:"#c9a84c"}}>{fmtCr(nwInv)}</span></div>
+                <div><span style={{color:"rgba(232,224,208,.35)"}}>Current: </span><span style={{fontFamily:"'DM Mono',monospace",color:"#e8e0d0"}}>{fmtCr(nwCur)}</span></div>
+                <div><span style={{color:"rgba(232,224,208,.35)"}}>Gain: </span><span style={{fontFamily:"'DM Mono',monospace",color:nwCur>=nwInv?"#4caf9a":"#e07c5a"}}>{fmtCr(nwCur-nwInv)} ({fmtPct(nwInv>0?(nwCur-nwInv)/nwInv*100:0)})</span></div>
               </div>
             </div>);
           })()}
 
-          {/* ── XIRR vs BENCHMARK ── */}
+          {/* ── XIRR vs BENCHMARK — MF & ETF only ── */}
           {(()=>{
-            // Per-holding XIRR table with benchmark comparison
-            const portfolioXirr = (()=>{
-              // Aggregate XIRR across all holdings
-              const allCfs = [], allDates = [];
-              for(const h of holdings){
+            // Benchmark CAGR from fetched prices
+            const benchCagr = benchmarkData.length>=2?(()=>{
+              const first=benchmarkData[0]?.value,last=benchmarkData[benchmarkData.length-1]?.value;
+              if(!first||!last) return null;
+              const yrs=(new Date(benchmarkData[benchmarkData.length-1].date+"-01")-new Date(benchmarkData[0].date+"-01"))/(864e5*365.25);
+              return yrs>0?(Math.pow(last/first,1/yrs)-1)*100:null;
+            })():null;
+
+            // MF/ETF holdings filtered by member
+            const mfEtfH = holdings.filter(h=>["MF","IN_ETF"].includes(h.type)
+              &&(benchmarkMember==="all"||h.member_id===benchmarkMember)
+              &&getVal(h)>0&&getXIRR(h)!==null);
+
+            // Aggregate XIRR for the filtered set
+            const aggXirr=(()=>{
+              const cfs=[],dates=[];
+              for(const h of mfEtfH){
                 for(const t of (h.transactions||[])){
-                  allCfs.push(t.txn_type==="BUY" ? -(+t.units)*(+t.price) : (+t.units)*(+t.price));
-                  allDates.push(new Date(t.txn_date));
+                  cfs.push(t.txn_type==="BUY"?-(+t.units)*(+t.price):(+t.units)*(+t.price));
+                  dates.push(new Date(t.txn_date));
                 }
               }
-              allCfs.push(allCur); allDates.push(new Date());
-              return xirr(allCfs, allDates);
+              const totalCur=mfEtfH.reduce((s,h)=>s+getVal(h),0);
+              if(!totalCur) return null;
+              cfs.push(totalCur); dates.push(new Date());
+              return xirr(cfs,dates);
             })();
 
-            const topHoldings = [...holdings]
-              .filter(h=>getVal(h)>0&&getXIRR(h)!==null)
-              .sort((a,b)=>getVal(b)-getVal(a))
-              .slice(0,8);
+            // Benchmark mapping per holding category
+            const BENCH_MAP={
+              "MF-Large Cap":"Nifty 100","MF-Mid Cap":"Nifty Midcap 150",
+              "MF-Small Cap":"Nifty Smallcap 250","MF-Flexi Cap":"Nifty 500",
+              "MF-Index":"Nifty 50","IN_ETF-Gold":"Gold","IN_ETF-Index":"Nifty 50",
+              "Default":"Nifty 50",
+            };
+            const getBenchLabel=(h)=>{
+              const n=h.name.toLowerCase();
+              if(n.includes("gold")) return "Gold";
+              if(n.includes("midcap")||n.includes("mid cap")) return "Nifty Midcap 150";
+              if(n.includes("smallcap")||n.includes("small cap")) return "Nifty Smallcap 250";
+              if(n.includes("flexi")||n.includes("multi")) return "Nifty 500";
+              if(n.includes("nifty 50")||n.includes("index")) return "Nifty 50";
+              if(n.includes("sensex")) return "Sensex";
+              if(n.includes("nasdaq")||n.includes("us")) return "Nasdaq 100";
+              return "Nifty 50";
+            };
+
+            const sortedH=[...mfEtfH].sort((a,b)=>getVal(b)-getVal(a));
+            const maxXr=Math.max(...sortedH.map(h=>Math.abs(getXIRR(h)||0)),1);
 
             return(
             <div className="card">
               <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"1rem",flexWrap:"wrap",gap:".5rem"}}>
-                <div className="ctitle" style={{margin:0}}>XIRR vs Benchmark</div>
-                <div style={{display:"flex",gap:".35rem",alignItems:"center"}}>
+                <div className="ctitle" style={{margin:0}}>XIRR vs Benchmark · MF & ETF</div>
+                <div style={{display:"flex",gap:".5rem",alignItems:"center",flexWrap:"wrap"}}>
+                  <select className="fi fs" style={{width:140,marginBottom:0,fontSize:".72rem",padding:".28rem .6rem"}}
+                    value={benchmarkMember} onChange={e=>setBenchmarkMember(e.target.value)}>
+                    <option value="all">All Members</option>
+                    {members.map(m=><option key={m.id} value={m.id}>{m.name}</option>)}
+                  </select>
                   {["1Y","3Y","ALL"].map(p=>(
                     <div key={p} onClick={async()=>{
-                      setBenchmarkPeriod(p);
-                      setBenchmarkLoading(true);
+                      setBenchmarkPeriod(p);setBenchmarkLoading(true);
                       try{const d=await api(`/api/benchmark?period=${p}&index=NIFTY`);setBenchmarkData(d.prices||[]);}catch{}
                       setBenchmarkLoading(false);
                     }} style={{padding:".2rem .55rem",borderRadius:4,cursor:"pointer",fontSize:".68rem",
@@ -1349,53 +1424,58 @@ ${alertLines||"  None"}`;
                       {p}
                     </div>
                   ))}
-                  {benchmarkLoading&&<span style={{fontSize:".68rem",color:"rgba(232,224,208,.3)"}}>Loading…</span>}
+                  {benchmarkLoading&&<span style={{fontSize:".68rem",color:"rgba(232,224,208,.3)"}}>…</span>}
                 </div>
               </div>
 
-              {/* Portfolio XIRR vs Nifty summary */}
+              {/* Aggregate XIRR vs Nifty */}
               <div style={{display:"flex",gap:"1rem",marginBottom:"1rem",flexWrap:"wrap"}}>
                 {[
-                  {label:"Your Portfolio XIRR",val:portfolioXirr,color:"#c9a84c"},
-                  {label:"Nifty 50 (approx)",val:benchmarkData.length>=2?(()=>{
-                    const first=benchmarkData[0]?.value,last=benchmarkData[benchmarkData.length-1]?.value;
-                    if(!first||!last) return null;
-                    const yrs=(new Date(benchmarkData[benchmarkData.length-1].date+"-01")-new Date(benchmarkData[0].date+"-01"))/(864e5*365.25);
-                    return yrs>0?(Math.pow(last/first,1/yrs)-1)*100:null;
-                  })():null,color:"#5a9ce0"},
+                  {label:"Your MF+ETF XIRR",val:aggXirr,color:"#c9a84c"},
+                  {label:`Nifty 50 CAGR (${benchmarkPeriod})`,val:benchCagr,color:"#5a9ce0"},
                 ].map(item=>(
                   <div key={item.label} style={{flex:1,minWidth:140,padding:".7rem .9rem",background:"rgba(255,255,255,.03)",border:"1px solid rgba(255,255,255,.07)",borderRadius:7}}>
-                    <div style={{fontSize:".63rem",color:"rgba(232,224,208,.35)",letterSpacing:".08em",textTransform:"uppercase",marginBottom:".35rem"}}>{item.label}</div>
-                    <div style={{fontFamily:"'DM Mono',monospace",fontSize:"1.3rem",color:item.val==null?"rgba(232,224,208,.3)":item.val>=0?item.color:"#e07c5a"}}>
+                    <div style={{fontSize:".63rem",color:"rgba(232,224,208,.35)",letterSpacing:".06em",textTransform:"uppercase",marginBottom:".35rem"}}>{item.label}</div>
+                    <div style={{fontFamily:"'DM Mono',monospace",fontSize:"1.3rem",color:item.val==null?"rgba(232,224,208,.25)":item.val>=0?item.color:"#e07c5a"}}>
                       {item.val==null?"—":`${item.val>=0?"+":""}${item.val.toFixed(1)}%`}
                     </div>
-                    {item.val!=null&&portfolioXirr!=null&&item.label.includes("Nifty")&&(
-                      <div style={{fontSize:".68rem",marginTop:".2rem",color:portfolioXirr>item.val?"#4caf9a":"#e07c5a"}}>
-                        You are {portfolioXirr>item.val?"outperforming":"underperforming"} by {Math.abs(portfolioXirr-item.val).toFixed(1)}%
+                    {item.val!=null&&aggXirr!=null&&item.label.includes("Nifty")&&(
+                      <div style={{fontSize:".68rem",marginTop:".25rem",color:aggXirr>item.val?"#4caf9a":"#e07c5a",fontWeight:500}}>
+                        {aggXirr>item.val?`↑ Outperforming by ${(aggXirr-item.val).toFixed(1)}%`:`↓ Underperforming by ${(item.val-aggXirr).toFixed(1)}%`}
                       </div>
+                    )}
+                    {benchmarkData.length===0&&item.label.includes("Nifty")&&(
+                      <div style={{fontSize:".65rem",color:"rgba(232,224,208,.25)",marginTop:".2rem"}}>Select a period to load benchmark</div>
                     )}
                   </div>
                 ))}
               </div>
 
-              {/* Per-holding XIRR bars */}
-              {topHoldings.length>0&&(
+              {/* Per-holding XIRR with benchmark label */}
+              {sortedH.length===0?<div className="empty">No MF or ETF holdings{benchmarkMember!=="all"?" for this member":""}</div>:(
                 <div>
-                  <div style={{fontSize:".63rem",color:"rgba(232,224,208,.3)",letterSpacing:".08em",textTransform:"uppercase",marginBottom:".5rem"}}>Top Holdings by XIRR</div>
-                  {topHoldings.map(h=>{
-                    const xr=getXIRR(h);
-                    const a=AT[h.type];
-                    const maxXr=Math.max(...topHoldings.map(x=>Math.abs(getXIRR(x)||0)),1);
-                    const barW=Math.min(Math.abs(xr||0)/maxXr*100,100);
+                  <div style={{display:"grid",gridTemplateColumns:"1fr auto auto",gap:".4rem .75rem",fontSize:".68rem",
+                    color:"rgba(232,224,208,.28)",letterSpacing:".07em",textTransform:"uppercase",marginBottom:".4rem",paddingBottom:".4rem",borderBottom:"1px solid rgba(255,255,255,.06)"}}>
+                    <div>Fund</div><div style={{textAlign:"right"}}>Benchmark</div><div style={{textAlign:"right",minWidth:60}}>XIRR</div>
+                  </div>
+                  {sortedH.map(h=>{
+                    const xr=getXIRR(h)||0;
+                    const barW=Math.min(Math.abs(xr)/maxXr*100,100);
+                    const bench=getBenchLabel(h);
+                    const mn=members.find(m=>m.id===h.member_id)?.name||"";
                     return(
-                    <div key={h.id} style={{display:"flex",alignItems:"center",gap:".75rem",marginBottom:".5rem"}}>
-                      <div style={{fontSize:".72rem",color:"rgba(232,224,208,.6)",width:160,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",flexShrink:0}}>
-                        {a.icon} {h.name.length>22?h.name.slice(0,22)+"…":h.name}
+                    <div key={h.id} style={{display:"grid",gridTemplateColumns:"1fr auto auto",gap:".4rem .75rem",marginBottom:".55rem",alignItems:"center"}}>
+                      <div>
+                        <div style={{fontSize:".73rem",color:"rgba(232,224,208,.75)",marginBottom:".2rem",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                          {AT[h.type]?.icon} {h.name.length>30?h.name.slice(0,30)+"…":h.name}
+                        </div>
+                        <div style={{height:5,background:"rgba(255,255,255,.06)",borderRadius:3,overflow:"hidden"}}>
+                          <div style={{height:"100%",width:`${barW}%`,background:xr>=0?"#4caf9a":"#e07c5a",borderRadius:3}}/>
+                        </div>
+                        {mn&&<div style={{fontSize:".62rem",color:"rgba(232,224,208,.28)",marginTop:".15rem"}}>{mn}</div>}
                       </div>
-                      <div style={{flex:1,height:6,background:"rgba(255,255,255,.06)",borderRadius:3,overflow:"hidden"}}>
-                        <div style={{height:"100%",width:`${barW}%`,background:xr>=0?"#4caf9a":"#e07c5a",borderRadius:3,transition:"width .6s"}}/>
-                      </div>
-                      <div style={{fontFamily:"'DM Mono',monospace",fontSize:".73rem",color:xr>=0?"#4caf9a":"#e07c5a",minWidth:52,textAlign:"right"}}>
+                      <div style={{fontSize:".65rem",color:"rgba(90,156,224,.6)",textAlign:"right",whiteSpace:"nowrap"}}>{bench}</div>
+                      <div style={{fontFamily:"'DM Mono',monospace",fontSize:".78rem",color:xr>=0?"#4caf9a":"#e07c5a",minWidth:60,textAlign:"right",fontWeight:600}}>
                         {xr>=0?"+":""}{xr.toFixed(1)}%
                       </div>
                     </div>);
@@ -2170,16 +2250,26 @@ ${alertLines||"  None"}`;
             if(h.type==="FD"&&h.maturity_date){
               addEvent(h.maturity_date,{type:"FD Maturity",label:h.name,color:"#f0a050",icon:"🏦"});
             }
-            // Detect recurring SIPs (≥2 transactions on same day-of-month in last 2 months)
-            if(h.type==="MF"&&h.transactions?.length>=2){
+            // Detect active recurring SIPs
+            // A SIP is "active" if: the holding has ≥3 transactions, the most recent one
+            // is within the last 40 days, and transactions show a consistent monthly pattern.
+            if(h.type==="MF"&&h.transactions?.length>=3){
               const txns=[...h.transactions].sort((a,b)=>b.txn_date.localeCompare(a.txn_date));
-              const last=txns[0];
-              if(last){
-                const sipDay=+last.txn_date.slice(8,10);
-                const nextSip=new Date(calY,calMo-1,sipDay);
-                if(nextSip.getMonth()===calMo-1){
+              const latestDate=new Date(txns[0].txn_date);
+              const daysSinceLast=(now-latestDate)/(864e5);
+              // Only treat as active SIP if last transaction was within 40 days
+              if(daysSinceLast<=40){
+                const sipDay=+txns[0].txn_date.slice(8,10);
+                // Verify consistent monthly pattern (at least 2 of last 3 txns on same day-of-month)
+                const days=txns.slice(0,3).map(t=>+t.txn_date.slice(8,10));
+                const consistent=days.filter(d=>Math.abs(d-sipDay)<=2).length>=2;
+                if(consistent){
                   const ds=`${calY}-${String(calMo).padStart(2,"0")}-${String(sipDay).padStart(2,"0")}`;
-                  addEvent(ds,{type:"SIP Due",label:h.name.length>24?h.name.slice(0,24)+"…":h.name,color:"#4caf9a",icon:"📈"});
+                  // Only add if this date exists in the calendar month
+                  const daysInCalMo=new Date(calY,calMo,0).getDate();
+                  if(sipDay<=daysInCalMo){
+                    addEvent(ds,{type:"SIP Due",label:h.name.length>24?h.name.slice(0,24)+"…":h.name,color:"#4caf9a",icon:"📈"});
+                  }
                 }
               }
             }
@@ -2314,6 +2404,235 @@ ${alertLines||"  None"}`;
                       <div style={{width:8,height:8,borderRadius:"50%",background:l.color,marginLeft:"auto"}}/>
                     </div>
                   ))}
+                </div>
+              </div>
+            </div>
+          </>);
+        })()}
+
+
+        {/* ── REBALANCING PLANNER ── */}
+        {tab==="rebalance"&&(()=>{
+          const rHoldings = rebalMember==="all" ? holdings : holdings.filter(h=>h.member_id===rebalMember);
+          const rTotal    = rHoldings.reduce((s,h)=>s+getVal(h),0);
+          const cash      = +rebalCash||0;
+          const totalWithCash = rTotal + cash;
+
+          // Current allocation per type
+          const curAlloc = {};
+          for(const h of rHoldings){
+            curAlloc[h.type] = (curAlloc[h.type]||0) + getVal(h);
+          }
+
+          // Normalise targets (ensure they sum to 100)
+          const tSum = Object.values(targetAlloc).reduce((s,v)=>s+(+v||0),0);
+          const normTarget = {};
+          for(const [k,v] of Object.entries(targetAlloc)){
+            normTarget[k] = tSum>0 ? (+v||0)/tSum*100 : 0;
+          }
+
+          // Compute trade list
+          const trades = Object.keys(AT).map(type=>{
+            const cur = curAlloc[type]||0;
+            const curPct = rTotal>0?(cur/rTotal)*100:0;
+            const tgtPct = normTarget[type]||0;
+            const tgtAmt = totalWithCash * (tgtPct/100);
+            const delta  = tgtAmt - cur;  // +ve = buy more, -ve = sell/reduce
+            return { type, cur, curPct, tgtPct, tgtAmt, delta };
+          }).filter(r=>r.tgtPct>0||r.cur>0);
+
+          const maxAbs = Math.max(...trades.map(t=>Math.abs(t.delta)),1);
+          const totalBuy  = trades.filter(t=>t.delta>0).reduce((s,t)=>s+t.delta,0);
+          const totalSell = trades.filter(t=>t.delta<0).reduce((s,t)=>s+Math.abs(t.delta),0);
+
+          return(<>
+            <div style={{display:"grid",gridTemplateColumns:"340px 1fr",gap:"1rem",alignItems:"start"}}>
+
+              {/* ── Left: Target allocation inputs ── */}
+              <div>
+                <div className="card" style={{marginBottom:"1rem"}}>
+                  <div className="ctitle">Set Target Allocation %</div>
+                  <div style={{marginBottom:".85rem",display:"flex",gap:".5rem",flexWrap:"wrap"}}>
+                    {["all",...members.map(m=>m.id)].map(id=>(
+                      <div key={id} onClick={()=>setRebalMember(id)}
+                        style={{padding:".28rem .6rem",borderRadius:4,cursor:"pointer",fontSize:".72rem",
+                          background:rebalMember===id?"rgba(201,168,76,.16)":"rgba(255,255,255,.04)",
+                          border:`1px solid ${rebalMember===id?"rgba(201,168,76,.4)":"rgba(255,255,255,.1)"}`,
+                          color:rebalMember===id?"#c9a84c":"rgba(232,224,208,.45)"}}>
+                        {id==="all"?"All":members.find(m=>m.id===id)?.name}
+                      </div>
+                    ))}
+                  </div>
+
+                  {Object.entries(AT).map(([type,a])=>{
+                    const tgtVal = +targetAlloc[type]||0;
+                    const cur = curAlloc[type]||0;
+                    const curPct = rTotal>0?(cur/rTotal)*100:0;
+                    return(
+                    <div key={type} style={{marginBottom:".7rem"}}>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:".25rem"}}>
+                        <span style={{fontSize:".77rem",color:"rgba(232,224,208,.7)"}}>{a.icon} {a.label}</span>
+                        <div style={{display:"flex",alignItems:"center",gap:".4rem"}}>
+                          <span style={{fontSize:".65rem",color:"rgba(232,224,208,.3)"}}>cur {curPct.toFixed(1)}%</span>
+                          <div style={{position:"relative",display:"flex",alignItems:"center"}}>
+                            <input type="number" min="0" max="100" step="1"
+                              value={targetAlloc[type]||0}
+                              onChange={e=>setTargetAlloc(p=>({...p,[type]:+e.target.value}))}
+                              style={{width:56,textAlign:"right",background:"rgba(255,255,255,.06)",border:"1px solid rgba(255,255,255,.12)",
+                                borderRadius:4,padding:".22rem .5rem",color:"#c9a84c",fontFamily:"'DM Mono',monospace",fontSize:".82rem"}}/>
+                            <span style={{marginLeft:".2rem",fontSize:".75rem",color:"rgba(232,224,208,.4)"}}>%</span>
+                          </div>
+                        </div>
+                      </div>
+                      <div style={{height:3,background:"rgba(255,255,255,.06)",borderRadius:2,overflow:"hidden"}}>
+                        <div style={{display:"flex",height:"100%"}}>
+                          <div style={{width:`${Math.min(curPct,100)}%`,background:a.color,opacity:.5,transition:"width .4s"}}/>
+                          {tgtVal>curPct&&<div style={{width:`${Math.min(tgtVal-curPct,100-curPct)}%`,background:a.color,opacity:.2,borderLeft:`1px dashed ${a.color}`}}/>}
+                        </div>
+                      </div>
+                    </div>);
+                  })}
+
+                  {/* Total % indicator */}
+                  <div style={{marginTop:".75rem",padding:".5rem .75rem",borderRadius:5,
+                    background:Math.abs(tSum-100)<0.5?"rgba(76,175,154,.08)":"rgba(224,124,90,.08)",
+                    border:`1px solid ${Math.abs(tSum-100)<0.5?"rgba(76,175,154,.25)":"rgba(224,124,90,.25)"}`,
+                    fontSize:".72rem",color:Math.abs(tSum-100)<0.5?"#4caf9a":"#e07c5a",textAlign:"center"}}>
+                    Total: {tSum.toFixed(1)}% {Math.abs(tSum-100)<0.5?"✓":"— should be 100%"}
+                  </div>
+
+                  {/* Available cash */}
+                  <div style={{marginTop:".75rem"}}>
+                    <label className="flbl">Available Cash to Deploy (₹)</label>
+                    <FmtInput value={rebalCash} placeholder="e.g. 50000 (optional)"
+                      onChange={e=>setRebalCash(e.target.value)}/>
+                  </div>
+                </div>
+
+                {/* Quick presets */}
+                <div className="card">
+                  <div className="ctitle">Quick Presets</div>
+                  {[
+                    {name:"Conservative",alloc:{IN_STOCK:15,MF:20,IN_ETF:5,US_STOCK:0,FD:30,PPF:15,EPF:15,REAL_ESTATE:0}},
+                    {name:"Balanced",    alloc:{IN_STOCK:30,MF:30,IN_ETF:10,US_STOCK:10,FD:10,PPF:5,EPF:5,REAL_ESTATE:0}},
+                    {name:"Aggressive",  alloc:{IN_STOCK:40,MF:30,IN_ETF:10,US_STOCK:15,FD:3,PPF:1,EPF:1,REAL_ESTATE:0}},
+                    {name:"Equity Heavy",alloc:{IN_STOCK:50,MF:35,IN_ETF:10,US_STOCK:5,FD:0,PPF:0,EPF:0,REAL_ESTATE:0}},
+                  ].map(p=>(
+                    <div key={p.name} onClick={()=>setTargetAlloc(p.alloc)}
+                      style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:".55rem .7rem",
+                        borderRadius:5,cursor:"pointer",marginBottom:".35rem",
+                        background:"rgba(255,255,255,.03)",border:"1px solid rgba(255,255,255,.07)",transition:"background .15s"}}
+                      onMouseEnter={e=>e.currentTarget.style.background="rgba(201,168,76,.07)"}
+                      onMouseLeave={e=>e.currentTarget.style.background="rgba(255,255,255,.03)"}>
+                      <span style={{fontSize:".78rem",color:"rgba(232,224,208,.7)"}}>{p.name}</span>
+                      <span style={{fontSize:".65rem",color:"rgba(232,224,208,.35)"}}>
+                        {Object.entries(p.alloc).filter(([,v])=>v>0).map(([k,v])=>`${AT[k]?.label} ${v}%`).join(" · ")}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* ── Right: Trade plan ── */}
+              <div>
+                {/* Summary KPIs */}
+                <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:".75rem",marginBottom:"1rem"}}>
+                  {[
+                    {label:"Portfolio Value",val:fmtCr(rTotal),color:"#e8e0d0"},
+                    {label:"Total to Buy",val:fmtCr(totalBuy),color:"#4caf9a"},
+                    {label:"Total to Sell/Reduce",val:fmtCr(totalSell),color:"#e07c5a"},
+                  ].map(k=>(
+                    <div key={k.label} className="card" style={{padding:".75rem 1rem"}}>
+                      <div style={{fontSize:".62rem",color:"rgba(232,224,208,.35)",letterSpacing:".08em",textTransform:"uppercase",marginBottom:".35rem"}}>{k.label}</div>
+                      <div style={{fontFamily:"'DM Mono',monospace",fontSize:"1rem",color:k.color}}>{k.val}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Trade list */}
+                <div className="card" style={{marginBottom:"1rem"}}>
+                  <div className="ctitle">Rebalancing Trade Plan</div>
+                  {rTotal===0?<div className="empty">Add holdings to generate a rebalancing plan</div>:(
+                    <>
+                    <table className="ht" style={{fontSize:".78rem"}}>
+                      <thead><tr>
+                        <th>Asset Class</th>
+                        <th className="r">Current</th><th className="r">Current %</th>
+                        <th className="r">Target %</th><th className="r">Target ₹</th>
+                        <th className="r">Action</th>
+                      </tr></thead>
+                      <tbody>
+                        {trades.sort((a,b)=>Math.abs(b.delta)-Math.abs(a.delta)).map(t=>{
+                          const a=AT[t.type];
+                          const isOver=t.delta<0, isUnder=t.delta>0, isFlat=Math.abs(t.delta)<500;
+                          return(
+                          <tr key={t.type}>
+                            <td><span style={{color:a.color}}>{a.icon}</span> {a.label}</td>
+                            <td className="r mono" style={{color:"rgba(232,224,208,.6)"}}>{fmtCr(t.cur)}</td>
+                            <td className="r mono" style={{color:"rgba(232,224,208,.5)"}}>{t.curPct.toFixed(1)}%</td>
+                            <td className="r mono" style={{color:"#c9a84c"}}>{t.tgtPct.toFixed(1)}%</td>
+                            <td className="r mono" style={{color:"rgba(232,224,208,.6)"}}>{fmtCr(t.tgtAmt)}</td>
+                            <td className="r">
+                              {isFlat?<span style={{color:"rgba(232,224,208,.3)",fontSize:".68rem"}}>✓ On target</span>:(
+                                <span style={{
+                                  background:isUnder?"rgba(76,175,154,.12)":"rgba(224,124,90,.12)",
+                                  color:isUnder?"#4caf9a":"#e07c5a",
+                                  border:`1px solid ${isUnder?"rgba(76,175,154,.3)":"rgba(224,124,90,.3)"}`,
+                                  borderRadius:4,padding:"2px 8px",fontSize:".7rem",fontFamily:"'DM Mono',monospace",
+                                  fontWeight:600,whiteSpace:"nowrap"
+                                }}>
+                                  {isUnder?"▲ Buy ":"▼ Reduce "}{fmtCr(Math.abs(t.delta))}
+                                </span>
+                              )}
+                            </td>
+                          </tr>);
+                        })}
+                      </tbody>
+                    </table>
+                    <div style={{marginTop:".75rem",padding:".55rem .85rem",background:"rgba(255,255,255,.03)",borderRadius:6,fontSize:".7rem",color:"rgba(232,224,208,.35)",lineHeight:1.6}}>
+                      ℹ️ "Reduce" means sell or stop investing new money in that class. Selling may have tax implications — consult your CA before executing.
+                      {cash>0&&<span style={{color:"rgba(201,168,76,.6)"}}>  Cash of {fmtCr(cash)} included in Buy calculations.</span>}
+                    </div>
+                    </>
+                  )}
+                </div>
+
+                {/* Visual drift chart */}
+                <div className="card">
+                  <div className="ctitle">Allocation Drift — Current vs Target</div>
+                  <div style={{display:"flex",flexDirection:"column",gap:".6rem"}}>
+                    {trades.filter(t=>t.tgtPct>0||t.cur>0).sort((a,b)=>b.tgtPct-a.tgtPct).map(t=>{
+                      const a=AT[t.type];
+                      const over=t.curPct>t.tgtPct+1;
+                      const under=t.curPct<t.tgtPct-1;
+                      return(
+                      <div key={t.type}>
+                        <div style={{display:"flex",justifyContent:"space-between",fontSize:".7rem",marginBottom:".2rem"}}>
+                          <span style={{color:"rgba(232,224,208,.65)"}}>{a.icon} {a.label}</span>
+                          <span style={{fontFamily:"'DM Mono',monospace",color:over?"#e07c5a":under?"#4caf9a":"rgba(232,224,208,.4)"}}>
+                            {t.curPct.toFixed(1)}% / {t.tgtPct.toFixed(1)}%
+                          </span>
+                        </div>
+                        <div style={{height:8,background:"rgba(255,255,255,.05)",borderRadius:4,overflow:"visible",position:"relative"}}>
+                          {/* Target marker */}
+                          <div style={{position:"absolute",left:`${Math.min(t.tgtPct,100)}%`,top:-2,width:2,height:12,
+                            background:"rgba(201,168,76,.6)",borderRadius:1,transform:"translateX(-50%)",zIndex:2}}/>
+                          {/* Current bar */}
+                          <div style={{height:"100%",width:`${Math.min(t.curPct,100)}%`,
+                            background:over?`${a.color}cc`:under?`${a.color}66`:`${a.color}99`,
+                            borderRadius:4,transition:"width .5s",position:"relative",zIndex:1}}/>
+                        </div>
+                        <div style={{fontSize:".6rem",color:"rgba(232,224,208,.25)",marginTop:".15rem"}}>
+                          {over?`Over by ${(t.curPct-t.tgtPct).toFixed(1)}%`:under?`Under by ${(t.tgtPct-t.curPct).toFixed(1)}%`:"On target"}
+                        </div>
+                      </div>);
+                    })}
+                  </div>
+                  <div style={{marginTop:".75rem",display:"flex",gap:"1rem",fontSize:".65rem",color:"rgba(232,224,208,.3)"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:".3rem"}}><div style={{width:12,height:2,background:"rgba(201,168,76,.6)"}}/> Target</div>
+                    <div style={{display:"flex",alignItems:"center",gap:".3rem"}}><div style={{width:12,height:8,background:"rgba(76,175,154,.5)",borderRadius:2}}/> Under</div>
+                    <div style={{display:"flex",alignItems:"center",gap:".3rem"}}><div style={{width:12,height:8,background:"rgba(224,124,90,.5)",borderRadius:2}}/> Over</div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -2722,9 +3041,9 @@ ${alertLines||"  None"}`;
             )}
           </div>
         )}
-        {form.type==="FD"&&<div className="frow"><FG label="Principal ₹"><input type="number" className="fi" value={form.principal||""} onChange={e=>setForm(f=>({...f,principal:e.target.value}))}/></FG><FG label="Rate % p.a."><input type="number" className="fi" value={form.interest_rate||""} onChange={e=>setForm(f=>({...f,interest_rate:e.target.value}))}/></FG><FG label="Maturity Date"><input type="date" className="fi" value={form.maturity_date||""} onChange={e=>setForm(f=>({...f,maturity_date:e.target.value}))}/></FG></div>}
+        {form.type==="FD"&&<div className="frow"><FG label="Principal ₹" style={{marginBottom:"1.5rem"}}><FmtInput value={form.principal||""} placeholder="e.g. 100000" onChange={e=>setForm(f=>({...f,principal:e.target.value}))}/></FG><FG label="Rate % p.a."><input type="number" className="fi" value={form.interest_rate||""} onChange={e=>setForm(f=>({...f,interest_rate:e.target.value}))}/></FG><FG label="Maturity Date"><input type="date" className="fi" value={form.maturity_date||""} onChange={e=>setForm(f=>({...f,maturity_date:e.target.value}))}/></FG></div>}
         {(form.type==="PPF"||form.type==="EPF")&&<FG label={`Current Corpus ₹ (auto-grows at ${form.type==="PPF"?PPF_R:EPF_R}% p.a.)`}><input type="number" className="fi" value={form.principal||""} onChange={e=>setForm(f=>({...f,principal:e.target.value}))}/></FG>}
-        {form.type==="REAL_ESTATE"&&<div className="frow"><FG label="Purchase Value ₹"><input type="number" className="fi" value={form.purchase_value||""} onChange={e=>setForm(f=>({...f,purchase_value:e.target.value}))}/></FG><FG label="Current Value ₹"><input type="number" className="fi" value={form.current_value||""} onChange={e=>setForm(f=>({...f,current_value:e.target.value}))}/></FG></div>}
+        {form.type==="REAL_ESTATE"&&<div className="frow"><FG label="Purchase Value ₹" style={{marginBottom:"1.5rem"}}><FmtInput value={form.purchase_value||""} placeholder="e.g. 5000000" onChange={e=>setForm(f=>({...f,purchase_value:e.target.value}))}/></FG><FG label="Current Value ₹" style={{marginBottom:"1.5rem"}}><FmtInput value={form.current_value||""} placeholder="e.g. 7500000" onChange={e=>setForm(f=>({...f,current_value:e.target.value}))}/></FG></div>}
         <FG label="Start Date"><input type="date" className="fi" value={form.start_date||""} onChange={e=>setForm(f=>({...f,start_date:e.target.value}))}/></FG>
         {["IN_STOCK","IN_ETF","US_STOCK","MF"].includes(form.type)&&!editHolding&&(
           <div style={{fontSize:".72rem",color:"#4caf9a",padding:".55rem .8rem",background:"rgba(76,175,154,.07)",border:"1px solid rgba(76,175,154,.2)",borderRadius:6,marginTop:".25rem"}}>
@@ -2942,7 +3261,7 @@ ${alertLines||"  None"}`;
         <div className="modtitle">Add Financial Goal</div>
         <FG label="Goal Name"><input className="fi" placeholder="e.g. Daughter's Education" value={goalForm.name} onChange={e=>setGoalForm(p=>({...p,name:e.target.value}))}/></FG>
         <div className="frow">
-          <FG label="Target Amount ₹"><input type="number" className="fi" placeholder="e.g. 5000000" value={goalForm.targetAmount} onChange={e=>setGoalForm(p=>({...p,targetAmount:e.target.value}))}/></FG>
+          <FG label="Target Amount ₹" style={{marginBottom:"1.5rem"}}><FmtInput placeholder="e.g. 5000000" value={goalForm.targetAmount} onChange={e=>setGoalForm(p=>({...p,targetAmount:e.target.value}))}/></FG>
           <FG label="Target Date"><input type="date" className="fi" value={goalForm.targetDate} onChange={e=>setGoalForm(p=>({...p,targetDate:e.target.value}))}/></FG>
         </div>
         <div className="frow">
@@ -2983,9 +3302,7 @@ ${alertLines||"  None"}`;
           <div style={{fontSize:".65rem",color:"rgba(232,224,208,.28)",marginTop:".4rem"}}>Progress will be calculated using selected members' portfolio value</div>
         </div>
 
-        <FG label="Monthly Contribution ₹ (optional)">
-          <input type="number" className="fi" placeholder="e.g. 10000" value={goalForm.monthlyContribution} onChange={e=>setGoalForm(p=>({...p,monthlyContribution:e.target.value}))}/>
-        </FG>
+        <FG label="Monthly Contribution ₹ (optional)" style={{marginBottom:"1.5rem"}}><FmtInput placeholder="e.g. 10000" value={goalForm.monthlyContribution} onChange={e=>setGoalForm(p=>({...p,monthlyContribution:e.target.value}))}/></FG>
         <FG label="Notes"><input className="fi" placeholder="Optional description" value={goalForm.notes} onChange={e=>setGoalForm(p=>({...p,notes:e.target.value}))}/></FG>
         <MA>
           <button className="btnc" onClick={()=>setModal(null)}>Cancel</button>
