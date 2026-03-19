@@ -653,6 +653,25 @@ export default function App() {
   const [globalMfNav,     setGlobalMfNav]     = useState(null);   // {nav, date, is_estimated}
   const [globalNavLoading,setGlobalNavLoading]= useState(false);
   const [globalNavError,  setGlobalNavError]  = useState("");
+
+  // ── Budget state ─────────────────────────────────────────────────
+  const [budgetStatements,  setBudgetStatements]  = useState([]);
+  const [budgetTxns,        setBudgetTxns]        = useState([]);
+  const [budgetCategories,  setBudgetCategories]  = useState([]);
+  const [budgetAnalytics,   setBudgetAnalytics]   = useState(null);
+  const [budgetSelStmt,     setBudgetSelStmt]     = useState("all");
+  const [budgetSelMonth,    setBudgetSelMonth]    = useState("");
+  const [budgetSelCat,      setBudgetSelCat]      = useState("All");
+  const [budgetSearch,      setBudgetSearch]      = useState("");
+  const [budgetView,        setBudgetView]        = useState("overview"); // overview | transactions | categories | import
+  const [budgetUploading,   setBudgetUploading]   = useState(false);
+  const [budgetUploadForm,  setBudgetUploadForm]  = useState({source:"", statement_type:"BANK", notes:""});
+  const [budgetUploadFile,  setBudgetUploadFile]  = useState(null);
+  const [budgetUploadMsg,   setBudgetUploadMsg]   = useState("");
+  const [budgetEditCat,     setBudgetEditCat]     = useState(null);
+  const [budgetNewCat,      setBudgetNewCat]      = useState({name:"",color:"#c9a84c",icon:"📁",monthly_limit:0,keywords:""});
+  const [selectedTxnIds,    setSelectedTxnIds]    = useState(new Set());
+  const [bulkCatTarget,     setBulkCatTarget]     = useState("");
   const [txnFilterMember, setTxnFilterMember] = useState("all");
   const [txnFilterType,   setTxnFilterType]   = useState("ALL");
   const [mfSearch,       setMfSearch]       = useState("");
@@ -1155,7 +1174,7 @@ ${alertLines||"  None"}`;
 
         {/* Tabs */}
         <div className="tabs">
-          {["overview","holdings","goals","alerts","members","ask"].map(t=>(
+          {["overview","holdings","goals","alerts","members","budget","ask"].map(t=>(
             <div key={t} className={`tab${tab===t?" act":""}`} onClick={()=>setTab(t)}>
               {t==="alerts"&&trigAlerts.length>0?<span>{t} <span className="tbadge">{trigAlerts.length}</span></span>
                :t==="ask"?<span style={{display:"flex",alignItems:"center",gap:".35rem"}}>✦ Advisor</span>
@@ -1427,6 +1446,476 @@ ${alertLines||"  None"}`;
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"1.2rem"}}><div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.1rem",color:"#e8e0d0"}}>Family Members</div><button className="btn-sm" onClick={()=>{setNewMember({name:"",relation:""});setModal("member");}}>+ Add Member</button></div>
           {mSum.map(m=>{const hs=holdings.filter(h=>h.member_id===m.id);const byT=Object.keys(AT).map(t=>({t,v:hs.filter(h=>h.type===t).reduce((s,h)=>s+getVal(h),0)})).filter(x=>x.v>0);return(<div key={m.id} className="card" style={{marginBottom:"1rem"}}><div style={{display:"flex",alignItems:"center",gap:".82rem",marginBottom:".95rem"}}><div className="av" style={{width:42,height:42,fontSize:"1rem"}}>{m.name[0]}</div><div><div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.2rem",color:"#e8e0d0"}}>{m.name}</div><div style={{fontSize:".68rem",color:"rgba(232,224,208,.33)",textTransform:"uppercase",letterSpacing:".08em"}}>{m.relation}</div></div><div style={{marginLeft:"auto",textAlign:"right"}}><div style={{fontFamily:"'DM Mono',monospace",fontSize:"1rem",color:"#c9a84c"}}>{fmt(m.cur)}</div><div className={m.gain>=0?"gain":"loss"} style={{fontSize:".73rem"}}>{fmtPct(m.pct)}</div></div></div><div style={{display:"flex",gap:".45rem",flexWrap:"wrap"}}>{byT.map(({t,v})=>{const a=AT[t];return(<div key={t} style={{background:a.color+"18",border:`1px solid ${a.color}44`,borderRadius:5,padding:".38rem .7rem",fontSize:".73rem",color:a.color}}>{a.icon} {a.label}: {fmt(v)}</div>);})}</div></div>);})}
         </>)}
+
+
+        {/* ── BUDGET ── */}
+        {tab==="budget"&&(()=>{
+
+          // ── Load functions ──
+          async function loadBudget(){
+            try{
+              const [stmts,cats,analytics]=await Promise.all([
+                api("/api/budget/statements"),
+                api("/api/budget/categories"),
+                api(`/api/budget/analytics${budgetSelMonth?`?month=${budgetSelMonth}`:""}`)
+              ]);
+              setBudgetStatements(stmts||[]);
+              setBudgetCategories(cats||[]);
+              setBudgetAnalytics(analytics||null);
+            }catch(e){console.error(e);}
+          }
+          async function loadTxns(){
+            try{
+              const params=new URLSearchParams();
+              if(budgetSelStmt!=="all") params.set("statement_id",budgetSelStmt);
+              if(budgetSelCat!=="All") params.set("category",budgetSelCat);
+              if(budgetSelMonth) params.set("month",budgetSelMonth);
+              if(budgetSearch) params.set("search",budgetSearch);
+              const txns=await api(`/api/budget/transactions?${params}`);
+              setBudgetTxns(txns||[]);
+            }catch(e){console.error(e);}
+          }
+
+          // ── Charts ──
+          const analytics=budgetAnalytics;
+          const catData=analytics?Object.entries(analytics.byCategory||{}).map(([name,v])=>{
+            const cat=budgetCategories.find(c=>c.name===name);
+            return{name,value:v,color:cat?.color||"#6b6356",icon:cat?.icon||"📦"};
+          }).sort((a,b)=>b.value-a.value):[];
+          const totalSpend=catData.reduce((s,x)=>s+x.value,0);
+
+          // Bar chart data (monthly trend)
+          const monthlyData=analytics?Object.entries(analytics.monthly||{})
+            .sort((a,b)=>a[0].localeCompare(b[0])).slice(-6):[];
+          const maxMonthly=Math.max(...monthlyData.map(x=>x[1]),1);
+
+          const fmtAmt=n=>n>=1e7?`₹${(n/1e7).toFixed(2)}Cr`:n>=1e5?`₹${(n/1e5).toFixed(1)}L`:n>=1000?`₹${(n/1000).toFixed(1)}K`:`₹${Math.round(n).toLocaleString("en-IN")}`;
+          const TYPE_COLORS={"BANK":"#5a9ce0","CREDIT_CARD":"#e07c5a","UPI":"#4caf9a","OTHER":"#a084ca"};
+          const TYPE_ICONS={"BANK":"🏦","CREDIT_CARD":"💳","UPI":"📲","OTHER":"📄"};
+
+          return(<>
+            {/* ── Sub-nav ── */}
+            <div style={{display:"flex",gap:".4rem",marginBottom:"1.2rem",flexWrap:"wrap",alignItems:"center",justifyContent:"space-between"}}>
+              <div style={{display:"flex",gap:".35rem"}}>
+                {["overview","transactions","categories","import"].map(v=>(
+                  <div key={v} onClick={async()=>{setBudgetView(v);if(v==="overview"||v==="categories")await loadBudget();if(v==="transactions")await loadTxns();}}
+                    style={{padding:".3rem .75rem",borderRadius:5,cursor:"pointer",fontSize:".73rem",fontWeight:500,
+                      background:budgetView===v?"rgba(201,168,76,.18)":"rgba(255,255,255,.04)",
+                      border:`1px solid ${budgetView===v?"rgba(201,168,76,.5)":"rgba(255,255,255,.1)"}`,
+                      color:budgetView===v?"#c9a84c":"rgba(232,224,208,.5)",transition:"all .15s",textTransform:"capitalize"}}>
+                    {v==="overview"?"📊 Overview":v==="transactions"?"📋 Transactions":v==="categories"?"🏷️ Categories":"📤 Import"}
+                  </div>
+                ))}
+              </div>
+              {/* Month picker */}
+              <div style={{display:"flex",alignItems:"center",gap:".5rem"}}>
+                <input type="month" className="fi" style={{width:150,padding:".28rem .6rem",fontSize:".75rem"}}
+                  value={budgetSelMonth}
+                  onChange={e=>{setBudgetSelMonth(e.target.value);}}
+                  placeholder="All time"/>
+                {budgetSelMonth&&<button onClick={()=>setBudgetSelMonth("")} style={{background:"none",border:"none",color:"rgba(232,224,208,.4)",cursor:"pointer",fontSize:".9rem"}}>✕</button>}
+              </div>
+            </div>
+
+            {/* ═══ OVERVIEW ═══ */}
+            {budgetView==="overview"&&(()=>{
+              if(!analytics) return(<div style={{textAlign:"center",padding:"3rem",color:"rgba(232,224,208,.3)"}}>
+                <div style={{fontSize:"2rem",marginBottom:".5rem"}}>📊</div>
+                <div>Import a bank statement to see your spending overview</div>
+                <button className="btns" style={{marginTop:"1rem"}} onClick={()=>setBudgetView("import")}>+ Import Statement</button>
+              </div>);
+              return(<>
+                {/* KPI row */}
+                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))",gap:".75rem",marginBottom:"1.2rem"}}>
+                  {[
+                    {label:"Total Spent",val:analytics.totalDebit,color:"#e07c5a"},
+                    {label:"Total Credited",val:analytics.totalCredit,color:"#4caf9a"},
+                    {label:"Net Flow",val:analytics.totalCredit-analytics.totalDebit,color:(analytics.totalCredit-analytics.totalDebit)>=0?"#4caf9a":"#e07c5a"},
+                    {label:"Categories",val:catData.length,color:"#c9a84c",isCnt:true},
+                  ].map(k=>(
+                    <div key={k.label} className="card" style={{padding:".85rem 1rem"}}>
+                      <div style={{fontSize:".62rem",letterSpacing:".1em",textTransform:"uppercase",color:"rgba(232,224,208,.35)",marginBottom:".4rem"}}>{k.label}</div>
+                      <div style={{fontFamily:"'DM Mono',monospace",fontSize:k.isCnt?"1.4rem":"1.1rem",color:k.color}}>
+                        {k.isCnt?k.val:fmtAmt(Math.abs(k.val))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"1rem",marginBottom:"1.2rem"}}>
+                  {/* Spending donut */}
+                  <div className="card">
+                    <div className="ctitle">Spending by Category</div>
+                    {catData.length===0?<div className="empty">No spending data</div>:(
+                      <div style={{display:"flex",gap:"1rem",alignItems:"flex-start",flexWrap:"wrap"}}>
+                        <svg viewBox="0 0 180 180" style={{width:160,height:160,flexShrink:0}}>
+                          {(()=>{
+                            let angle=-90;
+                            return catData.map((d,i)=>{
+                              const sweep=(d.value/totalSpend)*360;
+                              if(sweep<0.5){angle+=sweep;return null;}
+                              const r=72,ir=44,cx=90,cy=90;
+                              const pt=(a,rad)=>({x:cx+rad*Math.cos(a*Math.PI/180),y:cy+rad*Math.sin(a*Math.PI/180)});
+                              const sa=angle,ea=angle+sweep;
+                              angle+=sweep;
+                              const s=pt(sa,r),e=pt(ea,r),si=pt(sa,ir),ei=pt(ea,ir);
+                              const lg=sweep>180?1:0;
+                              const path=`M${s.x},${s.y}A${r},${r},0,${lg},1,${e.x},${e.y}L${ei.x},${ei.y}A${ir},${ir},0,${lg},0,${si.x},${si.y}Z`;
+                              return<path key={i} d={path} fill={d.color} opacity=".9"/>;
+                            });
+                          })()}
+                          <text x="90" y="86" textAnchor="middle" fill="#e8e0d0" fontSize="10" fontFamily="'DM Mono',monospace">{fmtAmt(totalSpend)}</text>
+                          <text x="90" y="100" textAnchor="middle" fill="rgba(232,224,208,.4)" fontSize="8">spent</text>
+                        </svg>
+                        <div style={{flex:1,minWidth:120}}>
+                          {catData.slice(0,8).map(d=>(
+                            <div key={d.name} style={{display:"flex",alignItems:"center",gap:".4rem",marginBottom:".35rem",fontSize:".72rem"}}>
+                              <div style={{width:8,height:8,borderRadius:"50%",background:d.color,flexShrink:0}}/>
+                              <div style={{flex:1,color:"rgba(232,224,208,.65)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{d.icon} {d.name}</div>
+                              <div style={{fontFamily:"'DM Mono',monospace",color:"rgba(232,224,208,.55)",fontSize:".68rem"}}>{((d.value/totalSpend)*100).toFixed(1)}%</div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Monthly bar chart */}
+                  <div className="card">
+                    <div className="ctitle">Monthly Spending Trend</div>
+                    {monthlyData.length===0?<div className="empty">No trend data yet</div>:(
+                      <div style={{display:"flex",alignItems:"flex-end",gap:".4rem",height:140,padding:".5rem 0"}}>
+                        {monthlyData.map(([mo,val])=>{
+                          const pct=(val/maxMonthly)*100;
+                          const label=new Date(mo+"-01").toLocaleDateString("en-IN",{month:"short"});
+                          return(
+                          <div key={mo} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:".3rem"}}>
+                            <div style={{fontSize:".6rem",color:"rgba(232,224,208,.4)",fontFamily:"'DM Mono',monospace"}}>{fmtAmt(val)}</div>
+                            <div style={{width:"100%",background:"rgba(201,168,76,.12)",borderRadius:"3px 3px 0 0",height:100,display:"flex",alignItems:"flex-end"}}>
+                              <div style={{width:"100%",background:"rgba(201,168,76,.7)",borderRadius:"3px 3px 0 0",height:`${pct}%`,transition:"height .6s ease"}}/>
+                            </div>
+                            <div style={{fontSize:".62rem",color:"rgba(232,224,208,.45)"}}>{label}</div>
+                          </div>);
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Category budget buckets */}
+                {catData.length>0&&(
+                  <div className="card">
+                    <div className="ctitle">Budget Buckets</div>
+                    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(260px,1fr))",gap:".75rem"}}>
+                      {catData.map(d=>{
+                        const cat=budgetCategories.find(c=>c.name===d.name);
+                        const limit=cat?.monthly_limit||0;
+                        const pct=limit>0?Math.min((d.value/limit)*100,100):0;
+                        const over=limit>0&&d.value>limit;
+                        return(
+                        <div key={d.name} style={{padding:".75rem .9rem",background:"rgba(255,255,255,.03)",border:`1px solid rgba(255,255,255,.07)`,borderRadius:7}}>
+                          <div style={{display:"flex",justifyContent:"space-between",marginBottom:".45rem"}}>
+                            <span style={{fontSize:".8rem",color:"#e8e0d0"}}>{d.icon} {d.name}</span>
+                            <span style={{fontFamily:"'DM Mono',monospace",fontSize:".78rem",color:over?"#e07c5a":"#c9a84c"}}>{fmtAmt(d.value)}</span>
+                          </div>
+                          {limit>0&&(
+                            <>
+                              <div style={{height:4,background:"rgba(255,255,255,.07)",borderRadius:2,marginBottom:".3rem"}}>
+                                <div style={{height:"100%",width:`${pct}%`,background:over?"#e07c5a":d.color,borderRadius:2,transition:"width .6s"}}/>
+                              </div>
+                              <div style={{fontSize:".65rem",color:"rgba(232,224,208,.35)"}}>
+                                {over?<span style={{color:"#e07c5a"}}>Over by {fmtAmt(d.value-limit)}</span>:
+                                  <span>{fmtAmt(limit-d.value)} remaining of {fmtAmt(limit)}</span>}
+                              </div>
+                            </>
+                          )}
+                        </div>);
+                      })}
+                    </div>
+                  </div>
+                )}
+              </>);
+            })()}
+
+            {/* ═══ TRANSACTIONS ═══ */}
+            {budgetView==="transactions"&&(()=>{
+              return(<>
+                {/* Filter bar */}
+                <div style={{display:"flex",gap:".6rem",marginBottom:".85rem",flexWrap:"wrap",alignItems:"flex-end"}}>
+                  <div style={{flex:2,minWidth:180}}>
+                    <label className="flbl">Search</label>
+                    <input className="fi" placeholder="Search transactions…" value={budgetSearch}
+                      onChange={e=>setBudgetSearch(e.target.value)}
+                      onKeyDown={e=>{if(e.key==="Enter")loadTxns();}}/>
+                  </div>
+                  <div style={{flex:1,minWidth:140}}>
+                    <label className="flbl">Statement</label>
+                    <select className="fi fs" value={budgetSelStmt} onChange={e=>setBudgetSelStmt(e.target.value)}>
+                      <option value="all">All</option>
+                      {budgetStatements.map(s=><option key={s.id} value={s.id}>{s.source} · {s.period_start?.slice(0,7)||"?"}</option>)}
+                    </select>
+                  </div>
+                  <div style={{flex:1,minWidth:140}}>
+                    <label className="flbl">Category</label>
+                    <select className="fi fs" value={budgetSelCat} onChange={e=>setBudgetSelCat(e.target.value)}>
+                      <option value="All">All Categories</option>
+                      {budgetCategories.map(c=><option key={c.id} value={c.name}>{c.icon} {c.name}</option>)}
+                    </select>
+                  </div>
+                  <button className="btns" onClick={loadTxns} style={{alignSelf:"flex-end"}}>Filter</button>
+                </div>
+
+                {/* Bulk actions */}
+                {selectedTxnIds.size>0&&(
+                  <div style={{display:"flex",alignItems:"center",gap:".7rem",padding:".6rem .9rem",background:"rgba(201,168,76,.08)",border:"1px solid rgba(201,168,76,.25)",borderRadius:7,marginBottom:".75rem"}}>
+                    <span style={{fontSize:".78rem",color:"#c9a84c"}}>{selectedTxnIds.size} selected</span>
+                    <select className="fi fs" style={{width:200,marginBottom:0}} value={bulkCatTarget} onChange={e=>setBulkCatTarget(e.target.value)}>
+                      <option value="">Move to category…</option>
+                      {budgetCategories.map(c=><option key={c.id} value={c.name}>{c.icon} {c.name}</option>)}
+                    </select>
+                    <button className="btns" onClick={async()=>{
+                      if(!bulkCatTarget)return;
+                      await api("/api/budget/recategorise",{method:"POST",body:JSON.stringify({ids:[...selectedTxnIds],category:bulkCatTarget})});
+                      setSelectedTxnIds(new Set());setBulkCatTarget("");
+                      await loadTxns();
+                    }}>Apply</button>
+                    <button onClick={()=>setSelectedTxnIds(new Set())} style={{background:"none",border:"none",color:"rgba(232,224,208,.4)",cursor:"pointer"}}>✕ Clear</button>
+                  </div>
+                )}
+
+                {budgetTxns.length===0?(
+                  <div className="card empty">No transactions — adjust filters or import a statement</div>
+                ):(
+                  <div className="card" style={{padding:0,overflow:"hidden"}}>
+                    <table className="ht">
+                      <thead><tr>
+                        <th style={{width:32}}><input type="checkbox" onChange={e=>{
+                          if(e.target.checked) setSelectedTxnIds(new Set(budgetTxns.map(t=>t.id)));
+                          else setSelectedTxnIds(new Set());
+                        }}/></th>
+                        <th>Date</th><th>Description</th><th className="r">Amount</th><th>Type</th><th>Category</th>
+                      </tr></thead>
+                      <tbody>
+                        {budgetTxns.slice(0,200).map(t=>{
+                          const cat=budgetCategories.find(c=>c.name===t.category);
+                          return(<tr key={t.id} style={{background:selectedTxnIds.has(t.id)?"rgba(201,168,76,.06)":""}}>
+                            <td><input type="checkbox" checked={selectedTxnIds.has(t.id)}
+                              onChange={e=>{const s=new Set(selectedTxnIds);e.target.checked?s.add(t.id):s.delete(t.id);setSelectedTxnIds(s);}}/></td>
+                            <td className="mono dim" style={{fontSize:".75rem"}}>{t.txn_date}</td>
+                            <td style={{maxWidth:260,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontSize:".78rem",color:"rgba(232,224,208,.8)"}}>{t.description}</td>
+                            <td className="r mono" style={{color:t.txn_type==="DEBIT"?"#e07c5a":"#4caf9a",fontSize:".82rem"}}>
+                              {t.txn_type==="DEBIT"?"-":"+"}{fmtAmt(t.amount)}
+                            </td>
+                            <td><span className="tbadge2" style={{background:t.txn_type==="DEBIT"?"rgba(224,124,90,.15)":"rgba(76,175,154,.15)",color:t.txn_type==="DEBIT"?"#e07c5a":"#4caf9a",fontSize:".65rem"}}>{t.txn_type}</span></td>
+                            <td>
+                              <select value={t.category} style={{background:"transparent",border:"none",color:cat?.color||"#c9a84c",fontSize:".73rem",cursor:"pointer",fontFamily:"inherit"}}
+                                onChange={async e=>{
+                                  await api(`/api/budget/transactions/${t.id}`,{method:"PATCH",body:JSON.stringify({category:e.target.value})});
+                                  setBudgetTxns(p=>p.map(x=>x.id===t.id?{...x,category:e.target.value}:x));
+                                }}>
+                                {budgetCategories.map(c=><option key={c.id} value={c.name}>{c.icon} {c.name}</option>)}
+                              </select>
+                            </td>
+                          </tr>);
+                        })}
+                      </tbody>
+                    </table>
+                    {budgetTxns.length>200&&<div style={{padding:".65rem",textAlign:"center",fontSize:".72rem",color:"rgba(232,224,208,.3)"}}>Showing 200 of {budgetTxns.length} transactions — apply filters to narrow</div>}
+                  </div>
+                )}
+              </>);
+            })()}
+
+            {/* ═══ CATEGORIES ═══ */}
+            {budgetView==="categories"&&(<>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"1rem"}}>
+                <div className="ctitle" style={{margin:0}}>Spending Categories</div>
+                <button className="btn-sm" onClick={()=>setBudgetEditCat("new")}>+ New Category</button>
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(280px,1fr))",gap:".75rem"}}>
+                {budgetCategories.map(cat=>(
+                  <div key={cat.id} className="card" style={{borderLeft:`3px solid ${cat.color}`,padding:".85rem 1rem"}}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+                      <div>
+                        <div style={{fontSize:".9rem",color:"#e8e0d0",marginBottom:".2rem"}}>{cat.icon} {cat.name}</div>
+                        <div style={{fontSize:".68rem",color:"rgba(232,224,208,.35)"}}>
+                          {cat.monthly_limit>0?`Budget: ₹${cat.monthly_limit.toLocaleString("en-IN")} /mo`:"No budget set"}
+                        </div>
+                        {cat.keywords&&<div style={{fontSize:".65rem",color:"rgba(232,224,208,.28)",marginTop:".2rem",lineHeight:1.5}}>Keywords: {cat.keywords.slice(0,60)}{cat.keywords.length>60?"…":""}</div>}
+                      </div>
+                      <div style={{display:"flex",gap:".3rem"}}>
+                        <button className="delbtn" onClick={()=>setBudgetEditCat(cat)} title="Edit">✎</button>
+                        <button className="delbtn" onClick={async()=>{
+                          if(!confirm(`Delete "${cat.name}"?`))return;
+                          await api(`/api/budget/categories/${cat.id}`,{method:"DELETE"});
+                          await loadBudget();
+                        }}>✕</button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Edit/New category modal */}
+              {budgetEditCat&&(
+                <Overlay onClose={()=>setBudgetEditCat(null)} narrow>
+                  <div className="modtitle">{budgetEditCat==="new"?"New Category":"Edit Category"}</div>
+                  {(()=>{
+                    const isNew=budgetEditCat==="new";
+                    const form=isNew?budgetNewCat:budgetEditCat;
+                    const setForm=isNew?setBudgetNewCat:(f=>setBudgetEditCat(p=>typeof f==="function"?f(p):f));
+                    return(<>
+                      <div className="frow">
+                        <FG label="Icon"><input className="fi" style={{width:60}} value={form.icon} onChange={e=>setForm(p=>({...p,icon:e.target.value}))}/></FG>
+                        <FG label="Name"><input className="fi" value={form.name} onChange={e=>setForm(p=>({...p,name:e.target.value}))}/></FG>
+                        <FG label="Colour"><input type="color" className="fi" value={form.color} onChange={e=>setForm(p=>({...p,color:e.target.value}))} style={{height:40,padding:"4px 8px",cursor:"pointer"}}/></FG>
+                      </div>
+                      <FG label="Monthly Budget ₹ (0 = unlimited)">
+                        <input type="number" className="fi" value={form.monthly_limit} onChange={e=>setForm(p=>({...p,monthly_limit:+e.target.value}))}/>
+                      </FG>
+                      <FG label="Auto-match Keywords (comma separated)">
+                        <input className="fi" placeholder="e.g. swiggy,zomato,restaurant" value={form.keywords} onChange={e=>setForm(p=>({...p,keywords:e.target.value}))}/>
+                      </FG>
+                      <MA>
+                        <button className="btnc" onClick={()=>setBudgetEditCat(null)}>Cancel</button>
+                        <button className="btns" onClick={async()=>{
+                          if(isNew){
+                            await api("/api/budget/categories",{method:"POST",body:JSON.stringify(form)});
+                            setBudgetNewCat({name:"",color:"#c9a84c",icon:"📁",monthly_limit:0,keywords:""});
+                          } else {
+                            await api(`/api/budget/categories/${form.id}`,{method:"PUT",body:JSON.stringify({name:form.name,color:form.color,icon:form.icon,monthly_limit:form.monthly_limit,keywords:form.keywords})});
+                          }
+                          setBudgetEditCat(null);
+                          await loadBudget();
+                        }} disabled={!form.name}>Save</button>
+                      </MA>
+                    </>);
+                  })()}
+                </Overlay>
+              )}
+            </>)}
+
+            {/* ═══ IMPORT ═══ */}
+            {budgetView==="import"&&(<>
+              {/* Upload card */}
+              <div className="card" style={{marginBottom:"1.2rem"}}>
+                <div className="ctitle">Import Bank Statement</div>
+                <div style={{fontSize:".77rem",color:"rgba(232,224,208,.45)",marginBottom:"1rem",lineHeight:1.7}}>
+                  Upload CSV or Excel statements from HDFC, ICICI, Axis, SBI, Kotak and other banks.
+                  Transactions are <span style={{color:"#4caf9a"}}>AES-256 encrypted</span> before storage. Statements older than 1 year are automatically purged.
+                </div>
+                <div className="frow">
+                  <FG label="Source / Bank Name">
+                    <input className="fi" placeholder="e.g. HDFC Savings, ICICI Credit Card"
+                      value={budgetUploadForm.source}
+                      onChange={e=>setBudgetUploadForm(p=>({...p,source:e.target.value}))}/>
+                  </FG>
+                  <FG label="Type">
+                    <select className="fi fs" value={budgetUploadForm.statement_type}
+                      onChange={e=>setBudgetUploadForm(p=>({...p,statement_type:e.target.value}))}>
+                      <option value="BANK">🏦 Bank Account</option>
+                      <option value="CREDIT_CARD">💳 Credit Card</option>
+                      <option value="UPI">📲 UPI / GPay</option>
+                      <option value="OTHER">📄 Other</option>
+                    </select>
+                  </FG>
+                </div>
+                <FG label="Statement File (CSV or XLSX)">
+                  <input type="file" accept=".csv,.xlsx,.xls" className="fi"
+                    onChange={e=>setBudgetUploadFile(e.target.files[0])}
+                    style={{paddingTop:".4rem",color:"rgba(232,224,208,.7)"}}/>
+                </FG>
+                <FG label="Notes (optional)">
+                  <input className="fi" placeholder="e.g. Jan–Mar 2026 statement"
+                    value={budgetUploadForm.notes}
+                    onChange={e=>setBudgetUploadForm(p=>({...p,notes:e.target.value}))}/>
+                </FG>
+
+                {budgetUploadMsg&&(
+                  <div style={{padding:".6rem .85rem",borderRadius:6,marginBottom:".75rem",fontSize:".78rem",
+                    background:budgetUploadMsg.startsWith("✓")?"rgba(76,175,154,.1)":"rgba(224,124,90,.1)",
+                    border:`1px solid ${budgetUploadMsg.startsWith("✓")?"rgba(76,175,154,.3)":"rgba(224,124,90,.3)"}`,
+                    color:budgetUploadMsg.startsWith("✓")?"#4caf9a":"#e07c5a"}}>
+                    {budgetUploadMsg}
+                  </div>
+                )}
+
+                <button className="btns" disabled={!budgetUploadFile||!budgetUploadForm.source||budgetUploading}
+                  onClick={async()=>{
+                    if(!budgetUploadFile||!budgetUploadForm.source) return;
+                    setBudgetUploading(true); setBudgetUploadMsg("");
+                    try{
+                      const fd=new FormData();
+                      fd.append("file",budgetUploadFile);
+                      fd.append("source",budgetUploadForm.source);
+                      fd.append("statement_type",budgetUploadForm.statement_type);
+                      fd.append("notes",budgetUploadForm.notes||"");
+                      const data=await api("/api/budget/upload",{method:"POST",body:fd});
+                      if(data.ok){
+                        setBudgetUploadMsg(`✓ Imported ${data.txn_count} transactions (${data.period_start} to ${data.period_end})`);
+                        setBudgetUploadFile(null);
+                        setBudgetUploadForm({source:"",statement_type:"BANK",notes:""});
+                        await loadBudget();
+                        const stmts=await api("/api/budget/statements");
+                        setBudgetStatements(stmts||[]);
+                      } else { setBudgetUploadMsg("⚠ "+data.error); }
+                    }catch(e){ setBudgetUploadMsg("⚠ "+e.message); }
+                    setBudgetUploading(false);
+                  }}>
+                  {budgetUploading?"Importing…":"Upload & Parse"}
+                </button>
+              </div>
+
+              {/* Statement history */}
+              <div className="card">
+                <div className="ctitle">Statement History (1-year rolling)</div>
+                {budgetStatements.length===0?<div className="empty">No statements imported yet</div>:(
+                  <table className="ht">
+                    <thead><tr><th>Source</th><th>Type</th><th>Period</th><th className="r">Transactions</th><th>Uploaded</th><th>Notes</th><th/></tr></thead>
+                    <tbody>
+                      {budgetStatements.map(s=>(
+                        <tr key={s.id}>
+                          <td style={{fontWeight:500,color:"#e8e0d0"}}>{s.source}</td>
+                          <td><span style={{fontSize:".68rem",padding:"2px 7px",borderRadius:3,background:`${TYPE_COLORS[s.statement_type]||"#6b6356"}22`,color:TYPE_COLORS[s.statement_type]||"#6b6356",border:`1px solid ${TYPE_COLORS[s.statement_type]||"#6b6356"}44`}}>{TYPE_ICONS[s.statement_type]} {s.statement_type}</span></td>
+                          <td className="dim" style={{fontSize:".75rem"}}>{s.period_start||"?"} → {s.period_end||"?"}</td>
+                          <td className="r mono" style={{color:"#c9a84c"}}>{s.txn_count}</td>
+                          <td className="dim" style={{fontSize:".72rem"}}>{s.upload_date?.slice(0,10)}</td>
+                          <td className="dim" style={{fontSize:".72rem",maxWidth:120,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.notes||"—"}</td>
+                          <td><button className="delbtn" onClick={async()=>{
+                            if(!confirm(`Delete "${s.source}" statement and all its transactions?`))return;
+                            await api(`/api/budget/statements/${s.id}`,{method:"DELETE"});
+                            const stmts=await api("/api/budget/statements");
+                            setBudgetStatements(stmts||[]);
+                          }}>✕</button></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+
+              {/* Alternatives tip */}
+              <div className="card" style={{marginTop:"1rem",borderColor:"rgba(160,132,202,.2)"}}>
+                <div style={{fontSize:".68rem",letterSpacing:".1em",textTransform:"uppercase",color:"#a084ca",marginBottom:".75rem"}}>💡 Better Ways to Import</div>
+                {[
+                  {icon:"📧",title:"Email Parsing",desc:"Banks email monthly statements. Forward them to a dedicated inbox and parse attachments automatically. Works well for HDFC, ICICI, Axis."},
+                  {icon:"🔗",title:"Account Aggregator (AA) Framework",desc:"India's RBI-regulated AA network (Finvu, Perfios, Setu) lets apps fetch bank data with your one-time consent. Zero manual exports — most accurate. Best long-term solution."},
+                  {icon:"💬",title:"SMS/WhatsApp Parsing",desc:"Banks send transaction SMSs. An SMS-reading app or webhook can parse and forward these in real time. Works for most Indian banks."},
+                  {icon:"🔑",title:"Net Banking API / Scraping",desc:"Tools like Selenium or Playwright can log into net banking and download statements. High maintenance risk but works when AA is unavailable."},
+                  {icon:"✍️",title:"Manual Quick Entry",desc:"A fast-entry form (date, amount, category, note) for cash transactions or when other methods aren't available."},
+                ].map(tip=>(
+                  <div key={tip.title} style={{display:"flex",gap:".75rem",marginBottom:".8rem",paddingBottom:".8rem",borderBottom:"1px solid rgba(255,255,255,.05)"}}>
+                    <div style={{fontSize:"1.3rem",flexShrink:0}}>{tip.icon}</div>
+                    <div>
+                      <div style={{fontSize:".8rem",color:"#e8e0d0",fontWeight:500,marginBottom:".2rem"}}>{tip.title}</div>
+                      <div style={{fontSize:".73rem",color:"rgba(232,224,208,.45)",lineHeight:1.6}}>{tip.desc}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>)}
+          </>);
+        })()}
 
         {/* ── ASK AI ── */}
         {tab==="ask"&&(
