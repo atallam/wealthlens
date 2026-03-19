@@ -146,7 +146,9 @@ app.post("/api/holdings", auth, async (req, res) => {
 });
 
 app.put("/api/holdings/:id", auth, async (req, res) => {
-  const { error } = await supabase.from("holdings").update(sanitizeDates(req.body)).eq("id", req.params.id);
+  // Strip computed / joined fields that are not real DB columns
+  const { artifacts, transactions, net_units, avg_cost, purchase_nav, purchase_price, ...holdingData } = req.body;
+  const { error } = await supabase.from("holdings").update(sanitizeDates(holdingData)).eq("id", req.params.id);
   if (error) return res.status(500).json({ error: error.message });
   res.json({ ok: true });
 });
@@ -778,4 +780,356 @@ app.listen(PORT, "0.0.0.0", () => {
   console.log(`📊  Price sources: Twelve Data → Yahoo Finance | MF: MFAPI → AMFI | FX: exchangerate-api → Yahoo → ${FX_FALLBACK}`);
   console.log(`🔐  Google Auth via Supabase`);
   console.log(`💾  Postgres DB + file storage via Supabase`);
+});
+
+// ══════════════════════════════════════════════════════════════════
+//  BUDGET MODULE
+// ══════════════════════════════════════════════════════════════════
+
+import { createRequire } from "module";
+const _require = createRequire(import.meta.url);
+const Papa = _require("papaparse");
+const XLSX = _require("xlsx");
+import crypto from "crypto";
+
+// ── Encryption helpers (AES-256-GCM) ─────────────────────────────
+const BUDGET_KEY = process.env.BUDGET_ENCRYPT_KEY
+  ? Buffer.from(process.env.BUDGET_ENCRYPT_KEY, "hex")
+  : crypto.randomBytes(32);
+if (!process.env.BUDGET_ENCRYPT_KEY) {
+  console.warn("⚠️  BUDGET_ENCRYPT_KEY not set — using ephemeral key. Transactions will lose decryption on restart. Set a 64-char hex key in Render env.");
+}
+
+function encrypt(text) {
+  if (!text) return "";
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", BUDGET_KEY, iv);
+  const enc = Buffer.concat([cipher.update(String(text), "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return iv.toString("hex") + ":" + tag.toString("hex") + ":" + enc.toString("hex");
+}
+
+function decrypt(data) {
+  if (!data || !data.includes(":")) return data || "";
+  try {
+    const [ivHex, tagHex, encHex] = data.split(":");
+    const decipher = crypto.createDecipheriv("aes-256-gcm", BUDGET_KEY, Buffer.from(ivHex, "hex"));
+    decipher.setAuthTag(Buffer.from(tagHex, "hex"));
+    return Buffer.concat([decipher.update(Buffer.from(encHex, "hex")), decipher.final()]).toString("utf8");
+  } catch { return "[encrypted]"; }
+}
+
+// ── Auto-categorise from keywords ────────────────────────────────
+async function autoCategorise(description) {
+  try {
+    const { data: cats } = await supabase.from("budget_categories").select("id,name,keywords");
+    const desc = description.toLowerCase();
+    for (const cat of (cats || [])) {
+      if (!cat.keywords) continue;
+      for (const kw of cat.keywords.split(",").map(k => k.trim()).filter(Boolean)) {
+        if (desc.includes(kw)) return cat.name;
+      }
+    }
+  } catch { /* ignore */ }
+  return "Other";
+}
+
+// ── Parser: detect bank format and parse CSV rows ─────────────────
+function parseCSV(text) {
+  const result = Papa.parse(text.trim(), { header: false, skipEmptyLines: true });
+  const rows = result.data;
+  if (!rows.length) return [];
+
+  // Detect format by header row
+  const headerRow = rows.find(r => r.some(c => /date|narration|description|particulars/i.test(c)));
+  if (!headerRow) return genericCSV(rows);
+
+  const h = headerRow.map(c => (c||"").toLowerCase().trim());
+  const dataRows = rows.slice(rows.indexOf(headerRow) + 1);
+
+  // HDFC Bank savings (Date, Narration, Chq/Ref, Value Date, Withdrawal, Deposit, Balance)
+  if (h.includes("narration") && h.includes("withdrawal amt.") || h.includes("withdrawal amt")) {
+    return dataRows.map(r => ({
+      date: r[0], desc: r[1], debit: r[4], credit: r[5], balance: r[6], ref: r[2]
+    })).filter(r => r.date && r.desc);
+  }
+
+  // ICICI Bank (S No., Value Date, Transaction Date, Cheque Number, Transaction Remarks, Withdrawal Amount, Deposit Amount, Balance)
+  if (h.some(c => c.includes("transaction remarks"))) {
+    return dataRows.map(r => ({
+      date: r[2]||r[1], desc: r[4], debit: r[5], credit: r[6], balance: r[7], ref: r[3]
+    })).filter(r => r.date && r.desc);
+  }
+
+  // Axis Bank (Tran Date, CHQNO, Particulars, Debit, Credit, Balance, Dr/Cr)
+  if (h.some(c => c.includes("particulars"))) {
+    return dataRows.map(r => ({
+      date: r[0], desc: r[2], debit: r[3], credit: r[4], balance: r[5], ref: r[1]
+    })).filter(r => r.date && r.desc);
+  }
+
+  // SBI (Txn Date, Value Date, Description, Ref No./Cheque No., Debit, Credit, Balance)
+  if (h.some(c => c.includes("txn date")) || h.some(c => c.includes("value date"))) {
+    return dataRows.map(r => ({
+      date: r[0], desc: r[2], debit: r[4], credit: r[5], balance: r[6], ref: r[3]
+    })).filter(r => r.date && r.desc);
+  }
+
+  // Kotak (Transaction Date, Value Date, Description, Debit, Credit, Balance)
+  if (h.some(c => c.includes("transaction date"))) {
+    const di = h.findIndex(c => c.includes("transaction date")||c.includes("date"));
+    const descI = h.findIndex(c => c.includes("description")||c.includes("particular")||c.includes("narration"));
+    const debI = h.findIndex(c => c.includes("debit")||c.includes("withdrawal"));
+    const credI = h.findIndex(c => c.includes("credit")||c.includes("deposit"));
+    const balI = h.findIndex(c => c.includes("balance"));
+    return dataRows.map(r => ({
+      date: r[di], desc: r[descI], debit: r[debI], credit: r[credI], balance: r[balI]
+    })).filter(r => r.date && r.desc);
+  }
+
+  return genericCSV(rows);
+}
+
+function genericCSV(rows) {
+  // Best-effort: find date-like, desc-like, amount-like columns
+  const header = rows[0] || [];
+  const h = header.map(c => (c||"").toLowerCase());
+  const di  = h.findIndex(c => /date/i.test(c));
+  const dsc = h.findIndex(c => /desc|narr|particular|remark/i.test(c));
+  const deb = h.findIndex(c => /debit|withdrawal|dr/i.test(c));
+  const crd = h.findIndex(c => /credit|deposit|cr/i.test(c));
+  const amt = h.findIndex(c => /amount/i.test(c));
+  if (di < 0 || (dsc < 0 && amt < 0)) return [];
+  return rows.slice(1).map(r => ({
+    date: r[di], desc: dsc >= 0 ? r[dsc] : r[1],
+    debit: deb >= 0 ? r[deb] : (amt >= 0 ? r[amt] : ""),
+    credit: crd >= 0 ? r[crd] : "",
+    balance: "", ref: ""
+  })).filter(r => r.date && r.desc);
+}
+
+function parseAmount(val) {
+  if (!val) return 0;
+  const n = parseFloat(String(val).replace(/[₹,\s]/g, "").trim());
+  return isNaN(n) ? 0 : n;
+}
+
+function parseDate(val) {
+  if (!val) return null;
+  const s = String(val).trim();
+  // DD/MM/YYYY or DD-MM-YYYY
+  const m1 = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
+  if (m1) {
+    const y = m1[3].length === 2 ? "20" + m1[3] : m1[3];
+    return `${y}-${m1[2].padStart(2,"0")}-${m1[1].padStart(2,"0")}`;
+  }
+  // YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  // DD MMM YYYY (01 Jan 2024)
+  const months = {jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12};
+  const m2 = s.match(/^(\d{1,2})\s+([a-z]{3})\s+(\d{4})$/i);
+  if (m2) {
+    const mo = months[m2[2].toLowerCase()];
+    if (mo) return `${m2[3]}-${String(mo).padStart(2,"0")}-${m2[1].padStart(2,"0")}`;
+  }
+  return null;
+}
+
+// ── BUDGET: Upload + Parse Statement ─────────────────────────────
+app.post("/api/budget/upload", auth, upload.single("file"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "No file" });
+  const { source, statement_type, notes } = req.body;
+
+  const id = "bst_" + Date.now() + Math.random().toString(36).slice(2,6);
+  const ext = req.file.originalname.split(".").pop().toLowerCase();
+
+  // ── Parse file ──
+  let rawRows = [];
+  try {
+    if (ext === "csv" || ext === "txt") {
+      rawRows = parseCSV(req.file.buffer.toString("utf8"));
+    } else if (ext === "xlsx" || ext === "xls") {
+      const wb = XLSX.read(req.file.buffer, { type: "buffer" });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const csvText = XLSX.utils.sheet_to_csv(ws);
+      rawRows = parseCSV(csvText);
+    } else {
+      return res.status(400).json({ error: "Unsupported format. Use CSV, XLS, or XLSX." });
+    }
+  } catch (e) {
+    return res.status(400).json({ error: "Parse error: " + e.message });
+  }
+
+  if (!rawRows.length) return res.status(400).json({ error: "No transactions found. Check the file format." });
+
+  // ── Build transactions ──
+  const txns = [];
+  let periodStart = null, periodEnd = null;
+
+  for (const row of rawRows) {
+    const date = parseDate(row.date);
+    if (!date) continue;
+    const debit = parseAmount(row.debit);
+    const credit = parseAmount(row.credit);
+    if (debit === 0 && credit === 0) continue;
+    const amount = debit > 0 ? debit : credit;
+    const type = debit > 0 ? "DEBIT" : "CREDIT";
+    const desc = String(row.desc || "").trim();
+    if (!desc) continue;
+    const category = await autoCategorise(desc);
+    if (!periodStart || date < periodStart) periodStart = date;
+    if (!periodEnd || date > periodEnd) periodEnd = date;
+    txns.push({
+      id: "btx_" + Date.now() + Math.random().toString(36).slice(2,8),
+      statement_id: id,
+      txn_date: date,
+      description: encrypt(desc),
+      raw_desc: encrypt(desc),
+      amount,
+      txn_type: type,
+      category,
+      balance: row.balance ? encrypt(String(row.balance)) : null,
+      ref_number: (row.ref || "").slice(0, 50),
+    });
+  }
+
+  if (!txns.length) return res.status(400).json({ error: "Transactions parsed but none had valid dates/amounts." });
+
+  // ── Purge statements older than 1 year ──
+  await supabase.from("budget_statements")
+    .delete()
+    .lt("upload_date", new Date(Date.now() - 365 * 24 * 3600_000).toISOString());
+
+  // ── Save statement record ──
+  const { error: stErr } = await supabase.from("budget_statements").insert({
+    id, source: source || "Unknown", statement_type: statement_type || "BANK",
+    filename: req.file.originalname, file_size: req.file.size,
+    period_start: periodStart, period_end: periodEnd,
+    txn_count: txns.length, notes: notes || "",
+  });
+  if (stErr) return res.status(500).json({ error: stErr.message });
+
+  // ── Batch insert transactions ──
+  const batchSize = 100;
+  for (let i = 0; i < txns.length; i += batchSize) {
+    const { error: txErr } = await supabase.from("budget_transactions").insert(txns.slice(i, i + batchSize));
+    if (txErr) { console.error("Batch insert error:", txErr.message); }
+  }
+
+  res.json({ ok: true, statement_id: id, txn_count: txns.length, period_start: periodStart, period_end: periodEnd });
+});
+
+// ── BUDGET: List statements ───────────────────────────────────────
+app.get("/api/budget/statements", auth, async (req, res) => {
+  const { data, error } = await supabase.from("budget_statements")
+    .select("*").order("upload_date", { ascending: false });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data || []);
+});
+
+// ── BUDGET: Delete statement ──────────────────────────────────────
+app.delete("/api/budget/statements/:id", auth, async (req, res) => {
+  await supabase.from("budget_statements").delete().eq("id", req.params.id);
+  res.json({ ok: true });
+});
+
+// ── BUDGET: Get transactions (with decryption) ────────────────────
+app.get("/api/budget/transactions", auth, async (req, res) => {
+  const { statement_id, category, month, search } = req.query;
+  let q = supabase.from("budget_transactions").select("*").order("txn_date", { ascending: false });
+  if (statement_id) q = q.eq("statement_id", statement_id);
+  if (category && category !== "All") q = q.eq("category", category);
+  if (month) { q = q.gte("txn_date", `${month}-01`).lte("txn_date", `${month}-31`); }
+  q = q.limit(1000);
+  const { data, error } = await q;
+  if (error) return res.status(500).json({ error: error.message });
+  // Decrypt descriptions
+  const decrypted = (data || []).map(t => ({
+    ...t,
+    description: decrypt(t.description),
+    balance: t.balance ? decrypt(t.balance) : null,
+  }));
+  // Client-side search filter after decryption
+  const filtered = search
+    ? decrypted.filter(t => t.description.toLowerCase().includes(search.toLowerCase()))
+    : decrypted;
+  res.json(filtered);
+});
+
+// ── BUDGET: Update transaction category ──────────────────────────
+app.patch("/api/budget/transactions/:id", auth, async (req, res) => {
+  const { category } = req.body;
+  const { error } = await supabase.from("budget_transactions").update({ category }).eq("id", req.params.id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true });
+});
+
+// ── BUDGET: Bulk recategorise ─────────────────────────────────────
+app.post("/api/budget/recategorise", auth, async (req, res) => {
+  const { ids, category } = req.body;
+  if (!ids?.length || !category) return res.status(400).json({ error: "ids and category required" });
+  const { error } = await supabase.from("budget_transactions").update({ category }).in("id", ids);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true, updated: ids.length });
+});
+
+// ── BUDGET: Categories CRUD ───────────────────────────────────────
+app.get("/api/budget/categories", auth, async (req, res) => {
+  const { data, error } = await supabase.from("budget_categories").select("*").order("name");
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data || []);
+});
+
+app.post("/api/budget/categories", auth, async (req, res) => {
+  const id = "cat_" + Date.now().toString(36);
+  const { error } = await supabase.from("budget_categories").insert({ id, ...req.body });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true, id });
+});
+
+app.put("/api/budget/categories/:id", auth, async (req, res) => {
+  const { error } = await supabase.from("budget_categories").update(req.body).eq("id", req.params.id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true });
+});
+
+app.delete("/api/budget/categories/:id", auth, async (req, res) => {
+  await supabase.from("budget_categories").delete().eq("id", req.params.id);
+  res.json({ ok: true });
+});
+
+// ── BUDGET: Analytics summary ─────────────────────────────────────
+app.get("/api/budget/analytics", auth, async (req, res) => {
+  const { month } = req.query; // YYYY-MM
+  const from = month ? `${month}-01` : new Date(Date.now() - 30*24*3600_000).toISOString().slice(0,10);
+  const to   = month ? `${month}-31` : new Date().toISOString().slice(0,10);
+
+  const { data: txns } = await supabase.from("budget_transactions")
+    .select("amount, txn_type, category, txn_date")
+    .gte("txn_date", from).lte("txn_date", to);
+
+  const byCategory = {};
+  let totalDebit = 0, totalCredit = 0;
+  for (const t of (txns || [])) {
+    if (t.txn_type === "DEBIT") {
+      totalDebit += t.amount;
+      byCategory[t.category] = (byCategory[t.category] || 0) + t.amount;
+    } else {
+      totalCredit += t.amount;
+    }
+  }
+
+  // Monthly trend (last 6 months)
+  const { data: allTxns } = await supabase.from("budget_transactions")
+    .select("amount, txn_type, txn_date")
+    .gte("txn_date", new Date(Date.now() - 180*24*3600_000).toISOString().slice(0,10))
+    .eq("txn_type", "DEBIT");
+
+  const monthly = {};
+  for (const t of (allTxns || [])) {
+    const mo = t.txn_date.slice(0, 7);
+    monthly[mo] = (monthly[mo] || 0) + t.amount;
+  }
+
+  res.json({ byCategory, totalDebit, totalCredit, monthly });
 });
