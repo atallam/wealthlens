@@ -1133,3 +1133,24 @@ app.get("/api/budget/analytics", auth, async (req, res) => {
 
   res.json({ byCategory, totalDebit, totalCredit, monthly });
 });
+
+// ── BENCHMARK — Nifty 50 / Sensex historical data ─────────────────
+app.get("/api/benchmark", auth, async (req, res) => {
+  const { period = "1Y", index = "NIFTY" } = req.query;
+  const symbol = index === "SENSEX" ? "^BSESN" : "^NSEI";
+  const ranges = { "1Y": "1y", "3Y": "3y", "5Y": "5y", "ALL": "10y" };
+  const range = ranges[period] || "1y";
+  try {
+    const data = await yahooFetch(`/v8/finance/chart/${symbol}?interval=1mo&range=${range}`);
+    const result = data?.chart?.result?.[0];
+    if (!result) return res.json({ prices: [] });
+    const timestamps = result.timestamp || [];
+    const closes = result.indicators?.adjclose?.[0]?.adjclose || result.indicators?.quote?.[0]?.close || [];
+    const prices = timestamps
+      .map((ts, i) => ({ date: new Date(ts * 1000).toISOString().slice(0, 7), value: closes[i] }))
+      .filter(p => p.value != null);
+    res.json({ prices, symbol });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});

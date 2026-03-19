@@ -672,6 +672,12 @@ export default function App() {
   const [budgetNewCat,      setBudgetNewCat]      = useState({name:"",color:"#c9a84c",icon:"📁",monthly_limit:0,keywords:""});
   const [selectedTxnIds,    setSelectedTxnIds]    = useState(new Set());
   const [bulkCatTarget,     setBulkCatTarget]     = useState("");
+
+  // ── Net Worth Timeline + Benchmark + Calendar ─────────────────
+  const [benchmarkData,     setBenchmarkData]     = useState([]);
+  const [benchmarkLoading,  setBenchmarkLoading]  = useState(false);
+  const [benchmarkPeriod,   setBenchmarkPeriod]   = useState("1Y");
+  const [calMonth,          setCalMonth]          = useState(()=>{const d=new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;});
   const [txnFilterMember, setTxnFilterMember] = useState("all");
   const [txnFilterType,   setTxnFilterType]   = useState("ALL");
   const [mfSearch,       setMfSearch]       = useState("");
@@ -1174,7 +1180,7 @@ ${alertLines||"  None"}`;
 
         {/* Tabs */}
         <div className="tabs">
-          {["overview","holdings","goals","alerts","members","budget","ask"].map(t=>(
+          {["overview","holdings","goals","alerts","members","budget","calendar","ask"].map(t=>(
             <div key={t} className={`tab${tab===t?" act":""}`} onClick={()=>setTab(t)}>
               {t==="alerts"&&trigAlerts.length>0?<span>{t} <span className="tbadge">{trigAlerts.length}</span></span>
                :t==="ask"?<span style={{display:"flex",alignItems:"center",gap:".35rem"}}>✦ Advisor</span>
@@ -1217,6 +1223,187 @@ ${alertLines||"  None"}`;
             </div>
           </div>
           <div className="card"><div className="ctitle">Category Distribution</div><DonutChart data={byType} total={totCur}/></div>
+
+          {/* ── NET WORTH TIMELINE ── */}
+          {(()=>{
+            // Build timeline from all transactions across all holdings
+            const events = [];
+            for(const h of holdings){
+              for(const t of (h.transactions||[])){
+                const cost = (t.txn_type==="BUY" ? 1 : -1) * (+t.units) * (+t.price);
+                events.push({date:t.txn_date, delta:cost});
+              }
+            }
+            events.sort((a,b)=>a.date.localeCompare(b.date));
+            // Monthly cumulative invested
+            const monthlyInv = {};
+            let cumInv = 0;
+            for(const e of events){
+              const mo = e.date.slice(0,7);
+              cumInv += e.delta;
+              monthlyInv[mo] = cumInv;
+            }
+            // Add static holdings (FD/PPF/REAL_ESTATE) using start_date
+            for(const h of holdings){
+              if(!["FD","PPF","EPF","REAL_ESTATE"].includes(h.type)) continue;
+              if(!h.start_date) continue;
+              const mo = h.start_date.slice(0,7);
+              monthlyInv[mo] = (monthlyInv[mo]||0) + getInv(h);
+            }
+            // Build timeline array — last 24 months
+            const months = Object.keys(monthlyInv).sort();
+            const last24 = months.slice(-24);
+            if(last24.length < 2) return null;
+            // Current value is allCur — we don't have historical prices, so show invested curve + today's value marker
+            const maxInv = Math.max(...last24.map(m=>monthlyInv[m]),allCur);
+            const W=520,H=140,pad={l:48,r:16,t:10,b:28};
+            const iW=W-pad.l-pad.r,iH=H-pad.t-pad.b;
+            const xPos=(i)=>pad.l+i*(iW/(last24.length-1));
+            const yPos=(v)=>pad.t+iH-((v/maxInv)*iH);
+            const invPoints=last24.map((m,i)=>`${xPos(i)},${yPos(monthlyInv[m]||0)}`).join(" ");
+            // Labels every 6 months
+            const labels=last24.filter((_,i)=>i===0||i===last24.length-1||(i%6===0));
+            return(
+            <div className="card">
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:".85rem"}}>
+                <div className="ctitle" style={{margin:0}}>Net Worth Timeline</div>
+                <div style={{display:"flex",gap:".35rem",alignItems:"center",fontSize:".68rem",color:"rgba(232,224,208,.4)"}}>
+                  <div style={{width:12,height:2,background:"#c9a84c",borderRadius:1}}/>Invested
+                  <div style={{width:8,height:8,borderRadius:"50%",background:"#4caf9a",marginLeft:".3rem"}}/>Today ₹{fmtCr(allCur)}
+                </div>
+              </div>
+              <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%",height:"auto"}}>
+                <defs>
+                  <linearGradient id="invGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#c9a84c" stopOpacity="0.25"/>
+                    <stop offset="100%" stopColor="#c9a84c" stopOpacity="0"/>
+                  </linearGradient>
+                </defs>
+                {/* Grid lines */}
+                {[0,.25,.5,.75,1].map(p=>{
+                  const y=pad.t+iH*p;
+                  return <g key={p}>
+                    <line x1={pad.l} y1={y} x2={W-pad.r} y2={y} stroke="rgba(255,255,255,.05)" strokeWidth="1"/>
+                    <text x={pad.l-4} y={y+4} textAnchor="end" fill="rgba(232,224,208,.25)" fontSize="8">
+                      {fmtCr(maxInv*(1-p))}
+                    </text>
+                  </g>;
+                })}
+                {/* Filled area under invested curve */}
+                <polygon points={`${pad.l},${pad.t+iH} ${invPoints} ${xPos(last24.length-1)},${pad.t+iH}`} fill="url(#invGrad)"/>
+                {/* Invested line */}
+                <polyline points={invPoints} fill="none" stroke="#c9a84c" strokeWidth="1.8" strokeLinejoin="round"/>
+                {/* Today marker */}
+                <circle cx={xPos(last24.length-1)} cy={yPos(allCur)} r="4" fill="#4caf9a"/>
+                <line x1={xPos(last24.length-1)} y1={yPos(monthlyInv[last24[last24.length-1]]||0)} x2={xPos(last24.length-1)} y2={yPos(allCur)} stroke="#4caf9a" strokeWidth="1" strokeDasharray="3,2"/>
+                {/* X axis labels */}
+                {last24.map((m,i)=>{
+                  if(!labels.includes(m)) return null;
+                  return <text key={m} x={xPos(i)} y={H-4} textAnchor="middle" fill="rgba(232,224,208,.28)" fontSize="8">
+                    {new Date(m+"-01").toLocaleDateString("en-IN",{month:"short",year:"2-digit"})}
+                  </text>;
+                })}
+              </svg>
+              <div style={{fontSize:".68rem",color:"rgba(232,224,208,.3)",marginTop:".4rem"}}>
+                Gain since start: <span style={{color:allCur>allInv?"#4caf9a":"#e07c5a",fontFamily:"'DM Mono',monospace"}}>{fmtCr(allCur-allInv)} ({fmtPct(allInv>0?(allCur-allInv)/allInv*100:0)})</span>
+              </div>
+            </div>);
+          })()}
+
+          {/* ── XIRR vs BENCHMARK ── */}
+          {(()=>{
+            // Per-holding XIRR table with benchmark comparison
+            const portfolioXirr = (()=>{
+              // Aggregate XIRR across all holdings
+              const allCfs = [], allDates = [];
+              for(const h of holdings){
+                for(const t of (h.transactions||[])){
+                  allCfs.push(t.txn_type==="BUY" ? -(+t.units)*(+t.price) : (+t.units)*(+t.price));
+                  allDates.push(new Date(t.txn_date));
+                }
+              }
+              allCfs.push(allCur); allDates.push(new Date());
+              return xirr(allCfs, allDates);
+            })();
+
+            const topHoldings = [...holdings]
+              .filter(h=>getVal(h)>0&&getXIRR(h)!==null)
+              .sort((a,b)=>getVal(b)-getVal(a))
+              .slice(0,8);
+
+            return(
+            <div className="card">
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"1rem",flexWrap:"wrap",gap:".5rem"}}>
+                <div className="ctitle" style={{margin:0}}>XIRR vs Benchmark</div>
+                <div style={{display:"flex",gap:".35rem",alignItems:"center"}}>
+                  {["1Y","3Y","ALL"].map(p=>(
+                    <div key={p} onClick={async()=>{
+                      setBenchmarkPeriod(p);
+                      setBenchmarkLoading(true);
+                      try{const d=await api(`/api/benchmark?period=${p}&index=NIFTY`);setBenchmarkData(d.prices||[]);}catch{}
+                      setBenchmarkLoading(false);
+                    }} style={{padding:".2rem .55rem",borderRadius:4,cursor:"pointer",fontSize:".68rem",
+                      background:benchmarkPeriod===p?"rgba(201,168,76,.18)":"rgba(255,255,255,.04)",
+                      border:`1px solid ${benchmarkPeriod===p?"rgba(201,168,76,.4)":"rgba(255,255,255,.1)"}`,
+                      color:benchmarkPeriod===p?"#c9a84c":"rgba(232,224,208,.4)"}}>
+                      {p}
+                    </div>
+                  ))}
+                  {benchmarkLoading&&<span style={{fontSize:".68rem",color:"rgba(232,224,208,.3)"}}>Loading…</span>}
+                </div>
+              </div>
+
+              {/* Portfolio XIRR vs Nifty summary */}
+              <div style={{display:"flex",gap:"1rem",marginBottom:"1rem",flexWrap:"wrap"}}>
+                {[
+                  {label:"Your Portfolio XIRR",val:portfolioXirr,color:"#c9a84c"},
+                  {label:"Nifty 50 (approx)",val:benchmarkData.length>=2?(()=>{
+                    const first=benchmarkData[0]?.value,last=benchmarkData[benchmarkData.length-1]?.value;
+                    if(!first||!last) return null;
+                    const yrs=(new Date(benchmarkData[benchmarkData.length-1].date+"-01")-new Date(benchmarkData[0].date+"-01"))/(864e5*365.25);
+                    return yrs>0?(Math.pow(last/first,1/yrs)-1)*100:null;
+                  })():null,color:"#5a9ce0"},
+                ].map(item=>(
+                  <div key={item.label} style={{flex:1,minWidth:140,padding:".7rem .9rem",background:"rgba(255,255,255,.03)",border:"1px solid rgba(255,255,255,.07)",borderRadius:7}}>
+                    <div style={{fontSize:".63rem",color:"rgba(232,224,208,.35)",letterSpacing:".08em",textTransform:"uppercase",marginBottom:".35rem"}}>{item.label}</div>
+                    <div style={{fontFamily:"'DM Mono',monospace",fontSize:"1.3rem",color:item.val==null?"rgba(232,224,208,.3)":item.val>=0?item.color:"#e07c5a"}}>
+                      {item.val==null?"—":`${item.val>=0?"+":""}${item.val.toFixed(1)}%`}
+                    </div>
+                    {item.val!=null&&portfolioXirr!=null&&item.label.includes("Nifty")&&(
+                      <div style={{fontSize:".68rem",marginTop:".2rem",color:portfolioXirr>item.val?"#4caf9a":"#e07c5a"}}>
+                        You are {portfolioXirr>item.val?"outperforming":"underperforming"} by {Math.abs(portfolioXirr-item.val).toFixed(1)}%
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              {/* Per-holding XIRR bars */}
+              {topHoldings.length>0&&(
+                <div>
+                  <div style={{fontSize:".63rem",color:"rgba(232,224,208,.3)",letterSpacing:".08em",textTransform:"uppercase",marginBottom:".5rem"}}>Top Holdings by XIRR</div>
+                  {topHoldings.map(h=>{
+                    const xr=getXIRR(h);
+                    const a=AT[h.type];
+                    const maxXr=Math.max(...topHoldings.map(x=>Math.abs(getXIRR(x)||0)),1);
+                    const barW=Math.min(Math.abs(xr||0)/maxXr*100,100);
+                    return(
+                    <div key={h.id} style={{display:"flex",alignItems:"center",gap:".75rem",marginBottom:".5rem"}}>
+                      <div style={{fontSize:".72rem",color:"rgba(232,224,208,.6)",width:160,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",flexShrink:0}}>
+                        {a.icon} {h.name.length>22?h.name.slice(0,22)+"…":h.name}
+                      </div>
+                      <div style={{flex:1,height:6,background:"rgba(255,255,255,.06)",borderRadius:3,overflow:"hidden"}}>
+                        <div style={{height:"100%",width:`${barW}%`,background:xr>=0?"#4caf9a":"#e07c5a",borderRadius:3,transition:"width .6s"}}/>
+                      </div>
+                      <div style={{fontFamily:"'DM Mono',monospace",fontSize:".73rem",color:xr>=0?"#4caf9a":"#e07c5a",minWidth:52,textAlign:"right"}}>
+                        {xr>=0?"+":""}{xr.toFixed(1)}%
+                      </div>
+                    </div>);
+                  })}
+                </div>
+              )}
+            </div>);
+          })()}
         </>)}
 
         {/* ── HOLDINGS ── */}
@@ -1634,6 +1821,50 @@ ${alertLines||"  None"}`;
                     </div>
                   </div>
                 )}
+
+              {/* ── Budget ↔ Investment Bridge ── */}
+              {analytics&&analytics.totalDebit>0&&(
+                <div className="card" style={{borderTop:"2px solid rgba(201,168,76,.3)"}}>
+                  <div style={{display:"flex",alignItems:"center",gap:".5rem",marginBottom:".85rem"}}>
+                    <div className="ctitle" style={{margin:0}}>💡 Spend-to-Wealth Bridge</div>
+                    <div style={{fontSize:".68rem",color:"rgba(232,224,208,.3)"}}>What if you invested more?</div>
+                  </div>
+                  {(()=>{
+                    const topCats = catData.filter(d=>!["Investments","Transfers","Other"].includes(d.name)).slice(0,4);
+                    const CAGR = 0.12; // 12% assumed portfolio CAGR
+                    const years = [5, 10, 15];
+                    return(
+                    <div style={{overflowX:"auto"}}>
+                      <table className="ht" style={{fontSize:".75rem"}}>
+                        <thead><tr>
+                          <th>Category</th><th className="r">Monthly Spend</th>
+                          {years.map(y=><th key={y} className="r">SIP → {y}Y at 12%</th>)}
+                          <th className="r">vs Your Return</th>
+                        </tr></thead>
+                        <tbody>
+                          {topCats.map(d=>{
+                            const monthly=d.value/Math.max(Object.keys(analytics.monthly||{}).length,1);
+                            return(<tr key={d.name}>
+                              <td><span style={{color:d.color}}>{d.icon}</span> {d.name}</td>
+                              <td className="r mono" style={{color:"#e07c5a"}}>₹{Math.round(monthly).toLocaleString("en-IN")}</td>
+                              {years.map(y=>{
+                                // FV of monthly SIP: P * [((1+r)^n - 1) / r] * (1+r)
+                                const r=CAGR/12, n=y*12;
+                                const fv=monthly*((Math.pow(1+r,n)-1)/r)*(1+r);
+                                return <td key={y} className="r mono" style={{color:"#4caf9a"}}>{fmtCr(fv)}</td>;
+                              })}
+                              <td className="r" style={{fontSize:".68rem",color:"rgba(232,224,208,.4)"}}>
+                                {totInv>0?`Your portfolio: ${fmtPct((allCur-allInv)/allInv*100)}`:"—"}
+                              </td>
+                            </tr>);
+                          })}
+                        </tbody>
+                      </table>
+                      <div style={{fontSize:".65rem",color:"rgba(232,224,208,.25)",marginTop:".5rem"}}>Assumes 12% CAGR. Monthly spend estimated from {budgetSelMonth||"all imported"} data.</div>
+                    </div>);
+                  })()}
+                </div>
+              )}
               </>);
             })()}
 
@@ -1914,6 +2145,178 @@ ${alertLines||"  None"}`;
                 ))}
               </div>
             </>)}
+          </>);
+        })()}
+
+
+        {/* ── CALENDAR ── */}
+        {tab==="calendar"&&(()=>{
+          const now = new Date();
+          const [calY, calMo] = calMonth.split("-").map(Number);
+          const firstDay = new Date(calY, calMo-1, 1).getDay(); // 0=Sun
+          const daysInMonth = new Date(calY, calMo, 0).getDate();
+
+          // ── Gather all calendar events from holdings + goals ──
+          const events = {}; // "YYYY-MM-DD" -> [{type,label,color,icon}]
+          const addEvent = (date, ev) => {
+            if(!date) return;
+            const d = date.slice(0,10);
+            if(!events[d]) events[d] = [];
+            events[d].push(ev);
+          };
+
+          // FD maturity
+          for(const h of holdings){
+            if(h.type==="FD"&&h.maturity_date){
+              addEvent(h.maturity_date,{type:"FD Maturity",label:h.name,color:"#f0a050",icon:"🏦"});
+            }
+            // Detect recurring SIPs (≥2 transactions on same day-of-month in last 2 months)
+            if(h.type==="MF"&&h.transactions?.length>=2){
+              const txns=[...h.transactions].sort((a,b)=>b.txn_date.localeCompare(a.txn_date));
+              const last=txns[0];
+              if(last){
+                const sipDay=+last.txn_date.slice(8,10);
+                const nextSip=new Date(calY,calMo-1,sipDay);
+                if(nextSip.getMonth()===calMo-1){
+                  const ds=`${calY}-${String(calMo).padStart(2,"0")}-${String(sipDay).padStart(2,"0")}`;
+                  addEvent(ds,{type:"SIP Due",label:h.name.length>24?h.name.slice(0,24)+"…":h.name,color:"#4caf9a",icon:"📈"});
+                }
+              }
+            }
+          }
+
+          // Goal target dates
+          for(const g of goals){
+            if(g.targetDate) addEvent(g.targetDate,{type:"Goal Target",label:g.name,color:g.color||"#c9a84c",icon:"🎯"});
+          }
+
+          // Indian financial calendar — fixed annual events
+          const finCalendar = [
+            // Tax
+            {mo:3,d:31,label:"FY End — File ITR / Last date for 80C investments",color:"#e07c5a",icon:"📋",type:"Tax"},
+            {mo:7,d:31,label:"ITR Filing Deadline (non-audit)",color:"#e07c5a",icon:"📋",type:"Tax"},
+            {mo:9,d:15,label:"Advance Tax Q2 (45%)",color:"#e07c5a",icon:"📋",type:"Tax"},
+            {mo:12,d:15,label:"Advance Tax Q3 (75%)",color:"#e07c5a",icon:"📋",type:"Tax"},
+            {mo:3,d:15,label:"Advance Tax Q4 (100%)",color:"#e07c5a",icon:"📋",type:"Tax"},
+            // PPF
+            {mo:4,d:5,label:"PPF — Deposit before 5th for full month interest",color:"#a084ca",icon:"💰",type:"PPF"},
+            {mo:3,d:31,label:"PPF Annual Contribution Deadline",color:"#a084ca",icon:"💰",type:"PPF"},
+            // ELSS / 80C
+            {mo:3,d:31,label:"ELSS / 80C — Last date for tax-saving investments",color:"#5a9ce0",icon:"🛡️",type:"80C"},
+          ];
+          for(const e of finCalendar){
+            if(e.mo===calMo){
+              const d=`${calY}-${String(e.mo).padStart(2,"0")}-${String(e.d).padStart(2,"0")}`;
+              addEvent(d,{type:e.type,label:e.label,color:e.color,icon:e.icon});
+            }
+          }
+
+          // Today
+          const todayStr=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}-${String(now.getDate()).padStart(2,"0")}`;
+          const isToday = (y,m,d) => `${y}-${String(m).padStart(2,"0")}-${String(d).padStart(2,"0")}` === todayStr;
+          const cellDate = (d) => `${calY}-${String(calMo).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
+
+          // ── Upcoming events list (next 60 days) ──
+          const upcoming = [];
+          const inRange = (d) => { const dt=new Date(d); return dt>=now && dt<=new Date(Date.now()+60*864e5); };
+          for(const [d,evs] of Object.entries(events)){
+            if(inRange(d)) evs.forEach(e=>upcoming.push({date:d,...e}));
+          }
+          upcoming.sort((a,b)=>a.date.localeCompare(b.date));
+
+          const DAYS=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+          const monthName=new Date(calY,calMo-1,1).toLocaleDateString("en-IN",{month:"long",year:"numeric"});
+          const prevMo=()=>{let m=calMo-1,y=calY;if(m<1){m=12;y--;}setCalMonth(`${y}-${String(m).padStart(2,"0")}`);};
+          const nextMo=()=>{let m=calMo+1,y=calY;if(m>12){m=1;y++;}setCalMonth(`${y}-${String(m).padStart(2,"0")}`);};
+
+          return(<>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 280px",gap:"1rem",alignItems:"start"}}>
+
+              {/* Calendar grid */}
+              <div className="card" style={{padding:"1rem"}}>
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"1rem"}}>
+                  <button onClick={prevMo} style={{background:"rgba(255,255,255,.06)",border:"1px solid rgba(255,255,255,.1)",color:"rgba(232,224,208,.6)",borderRadius:5,padding:".25rem .6rem",cursor:"pointer",fontSize:".85rem"}}>‹</button>
+                  <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.1rem",color:"#e8e0d0"}}>{monthName}</div>
+                  <button onClick={nextMo} style={{background:"rgba(255,255,255,.06)",border:"1px solid rgba(255,255,255,.1)",color:"rgba(232,224,208,.6)",borderRadius:5,padding:".25rem .6rem",cursor:"pointer",fontSize:".85rem"}}>›</button>
+                </div>
+
+                {/* Day headers */}
+                <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:2,marginBottom:4}}>
+                  {DAYS.map(d=><div key={d} style={{textAlign:"center",fontSize:".63rem",color:"rgba(232,224,208,.28)",letterSpacing:".05em",padding:".3rem 0"}}>{d}</div>)}
+                </div>
+
+                {/* Calendar cells */}
+                <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:2}}>
+                  {Array.from({length:firstDay},(_,i)=><div key={"e"+i}/>)}
+                  {Array.from({length:daysInMonth},(_,i)=>{
+                    const day=i+1;
+                    const key=cellDate(day);
+                    const dayEvents=events[key]||[];
+                    const today=isToday(calY,calMo,day);
+                    return(
+                    <div key={day} style={{
+                      minHeight:56,padding:".3rem .28rem",borderRadius:5,position:"relative",
+                      background:today?"rgba(201,168,76,.12)":"rgba(255,255,255,.02)",
+                      border:`1px solid ${today?"rgba(201,168,76,.3)":"rgba(255,255,255,.05)"}`,
+                    }}>
+                      <div style={{fontSize:".72rem",color:today?"#c9a84c":"rgba(232,224,208,.4)",fontWeight:today?600:400,marginBottom:".2rem"}}>{day}</div>
+                      {dayEvents.slice(0,2).map((e,idx)=>(
+                        <div key={idx} style={{fontSize:".55rem",lineHeight:1.3,padding:"1px 3px",borderRadius:2,marginBottom:1,
+                          background:`${e.color}22`,color:e.color,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}
+                          title={e.label}>
+                          {e.icon} {e.label.slice(0,14)}{e.label.length>14?"…":""}
+                        </div>
+                      ))}
+                      {dayEvents.length>2&&<div style={{fontSize:".52rem",color:"rgba(232,224,208,.3)"}}>+{dayEvents.length-2} more</div>}
+                    </div>);
+                  })}
+                </div>
+              </div>
+
+              {/* Upcoming events panel */}
+              <div>
+                <div className="card" style={{marginBottom:"1rem"}}>
+                  <div className="ctitle">Upcoming (60 days)</div>
+                  {upcoming.length===0?<div className="empty" style={{padding:".75rem 0"}}>Nothing due soon</div>:(
+                    upcoming.map((e,i)=>{
+                      const dt=new Date(e.date);
+                      const daysLeft=Math.ceil((dt-now)/864e5);
+                      return(
+                      <div key={i} style={{display:"flex",gap:".6rem",padding:".6rem 0",borderBottom:"1px solid rgba(255,255,255,.05)"}}>
+                        <div style={{fontSize:"1.1rem",flexShrink:0}}>{e.icon}</div>
+                        <div style={{flex:1}}>
+                          <div style={{fontSize:".75rem",color:"#e8e0d0",lineHeight:1.4,marginBottom:".15rem"}}>{e.label}</div>
+                          <div style={{fontSize:".65rem",color:"rgba(232,224,208,.35)"}}>{e.type}</div>
+                        </div>
+                        <div style={{textAlign:"right",flexShrink:0}}>
+                          <div style={{fontFamily:"'DM Mono',monospace",fontSize:".7rem",color:e.color}}>{daysLeft===0?"Today":daysLeft===1?"Tomorrow":`${daysLeft}d`}</div>
+                          <div style={{fontSize:".62rem",color:"rgba(232,224,208,.28)"}}>{dt.toLocaleDateString("en-IN",{day:"numeric",month:"short"})}</div>
+                        </div>
+                      </div>);
+                    })
+                  )}
+                </div>
+
+                {/* Legend */}
+                <div className="card">
+                  <div className="ctitle">Event Types</div>
+                  {[
+                    {icon:"📈",label:"SIP Dues",color:"#4caf9a"},
+                    {icon:"🏦",label:"FD Maturity",color:"#f0a050"},
+                    {icon:"🎯",label:"Goal Targets",color:"#c9a84c"},
+                    {icon:"📋",label:"Tax Deadlines",color:"#e07c5a"},
+                    {icon:"💰",label:"PPF Dates",color:"#a084ca"},
+                    {icon:"🛡️",label:"80C Deadlines",color:"#5a9ce0"},
+                  ].map(l=>(
+                    <div key={l.label} style={{display:"flex",alignItems:"center",gap:".5rem",marginBottom:".35rem"}}>
+                      <div style={{fontSize:".85rem"}}>{l.icon}</div>
+                      <div style={{fontSize:".73rem",color:"rgba(232,224,208,.55)"}}>{l.label}</div>
+                      <div style={{width:8,height:8,borderRadius:"50%",background:l.color,marginLeft:"auto"}}/>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
           </>);
         })()}
 
