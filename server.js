@@ -196,98 +196,8 @@ app.delete("/api/transactions/:id", auth, async (req, res) => {
 
 // ── FOREX RATE — live USD/INR ─────────────────────────────────────
 app.get("/api/forex/usdinr", auth, async (req, res) => {
-  try {
-    const price = await yahooPrice("USDINR=X");
-    if (!price) return res.json({ rate: 83.2, source: "fallback" });
-    res.json({ rate: price, source: "yahoo", fetched_at: new Date().toISOString() });
-  } catch (e) {
-    res.json({ rate: 83.2, source: "fallback" });
-  }
-});
-
-// ── ETF SEARCH — search NSE ETFs via Yahoo Finance ───────────────
-app.get("/api/etf/search", auth, async (req, res) => {
-  const q = req.query.q || "";
-  if (q.length < 2) return res.json([]);
-  try {
-    const url = `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(q)}&quotesCount=20&newsCount=0&listsCount=0`;
-    const response = await fetch(url, {
-      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" }
-    });
-    const data = await response.json();
-    const quotes = data?.quotes || [];
-
-    // Indian ETFs on Yahoo Finance are often tagged as EQUITY, not ETF.
-    // Filter: must be on NSE (.NS) or BSE (.BO), and either
-    //   (a) quoteType is ETF, OR
-    //   (b) name contains ETF/BeES/BEES/Fund keywords
-    const ETF_KEYWORDS = /etf|bees|fund|gold|nifty|sensex|index|junior|midcap|smallcap|liquid|overnight|banking|infra|pharma|it\s|tech/i;
-
-    const etfs = quotes
-      .filter(q => {
-        const onIndianExchange = q.symbol?.endsWith(".NS") || q.symbol?.endsWith(".BO")
-                               || q.exchange === "NSI"   || q.exchange === "BSE";
-        if (!onIndianExchange) return false;
-        const isEtfType = q.quoteType === "ETF";
-        const nameHint  = ETF_KEYWORDS.test(q.longname||"") || ETF_KEYWORDS.test(q.shortname||"");
-        return isEtfType || nameHint;
-      })
-      .slice(0, 10)
-      .map(q => ({
-        ticker:   q.symbol?.replace(/\.(NS|BO)$/, "") || q.symbol,
-        symbol:   q.symbol,
-        name:     q.longname || q.shortname || q.symbol,
-        exchange: q.exchange === "NSI" ? "NSE" : q.exchange === "BSE" ? "BSE" : q.exchange || "NSE",
-        type:     q.quoteType,
-      }));
-
-    res.json(etfs);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// ── STOCK NAME LOOKUP — fetch company name from Yahoo Finance ────
-app.get("/api/stock/info", auth, async (req, res) => {
-  const { ticker, market } = req.query;
-  if (!ticker) return res.status(400).json({ error: "ticker required" });
-  const symbol = market === "IN" ? `${ticker.toUpperCase()}.NS` : ticker.toUpperCase();
-  try {
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1d`;
-    const response = await fetch(url, {
-      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" }
-    });
-    const data = await response.json();
-    const meta = data?.chart?.result?.[0]?.meta;
-    if (!meta) return res.json({ found: false });
-    res.json({
-      found:        true,
-      name:         meta.longName || meta.shortName || "",
-      price:        meta.regularMarketPrice || null,
-      currency:     meta.currency || "",
-      exchange:     meta.exchangeName || "",
-      symbol:       meta.symbol || symbol,
-    });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// ── MF SEARCH — proxy to mfapi.in ────────────────────────────────
-app.get("/api/mf/search", auth, async (req, res) => {
-  const q = req.query.q || "";
-  if (q.length < 2) return res.json([]);
-  try {
-    const response = await fetch(`https://api.mfapi.in/mf/search?q=${encodeURIComponent(q)}`);
-    const data = await response.json();
-    // Return top 10 results with scheme code and name
-    res.json((data || []).slice(0, 10).map(f => ({
-      scheme_code: String(f.schemeCode),
-      name:        f.schemeName,
-    })));
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+  const result = await fetchUsdInr();
+  res.json({ ...result, fetched_at: new Date().toISOString() });
 });
 
 // ── SIP BATCH NAV — fetch NAVs for a date range for SIP import ───
@@ -298,7 +208,8 @@ app.post("/api/mf/sip-navs", auth, async (req, res) => {
 
   try {
     // Fetch full NAV history once
-    const response = await fetch(`https://api.mfapi.in/mf/${scheme_code}`);
+    const response = await timedFetch(`https://api.mfapi.in/mf/${scheme_code}`, {}, 10000);
+    if (!response.ok) throw new Error("MFAPI unavailable");
     const data = await response.json();
     const navHistory = data?.data || []; // [{date: "05-01-2024", nav: "77.8900"}, ...]
     const meta = data?.meta || {};
@@ -375,23 +286,110 @@ app.post("/api/mf/sip-navs", auth, async (req, res) => {
   }
 });
 
-// ── MF NAV LOOKUP — get current NAV for a scheme code ────────────
+// ── MF NAV — MFAPI → AMFI direct ────────────────────────────────
 app.get("/api/mf/nav/:schemeCode", auth, async (req, res) => {
+  const result = await fetchMfNav(req.params.schemeCode);
+  if (!result) return res.json({ nav: null });
+  res.json({
+    nav:             result.nav,
+    date:            result.date || null,
+    fund_house:      result.meta?.fund_house || "",
+    scheme_category: result.meta?.scheme_category || "",
+    scheme_type:     result.meta?.scheme_type || "",
+    source:          result.source,
+  });
+});
+
+// ── MF SEARCH — AMFI master list → MFAPI supplement ─────────────
+app.get("/api/mf/search", auth, async (req, res) => {
+  const q = (req.query.q || "").trim();
+  if (q.length < 2) return res.json([]);
+  const qLower = q.toLowerCase();
+  const qWords = qLower.split(/\s+/).filter(Boolean);
+
+  // Primary: AMFI master list local fuzzy search (always populated from cache)
+  const all = await getAmfiList();
+  let results = all
+    .map(f => ({ ...f, score: scoreMf(f.name, qLower, qWords) }))
+    .filter(f => f.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 15);
+
+  // Supplement: MFAPI search — adds any results not already found
+  if (results.length < 5) {
+    try {
+      const r = await timedFetch(`https://api.mfapi.in/mf/search?q=${encodeURIComponent(q)}`, {}, 4000);
+      if (r.ok) {
+        const data = await r.json();
+        const existing = new Set(results.map(x => x.scheme_code));
+        for (const f of (data || [])) {
+          const sc = String(f.schemeCode);
+          if (!existing.has(sc)) {
+            results.push({ scheme_code: sc, name: f.schemeName, score: scoreMf(f.schemeName, qLower, qWords) });
+            existing.add(sc);
+          }
+        }
+        results.sort((a, b) => (b.score || 0) - (a.score || 0));
+      }
+    } catch { /* fall through */ }
+  }
+
+  res.json(results.slice(0, 15).map(f => ({ scheme_code: f.scheme_code, name: f.name })));
+});
+
+// ── ETF SEARCH — Indian ETFs via Twelve Data → Yahoo ─────────────
+app.get("/api/etf/search", auth, async (req, res) => {
+  const q = req.query.q || "";
+  if (q.length < 2) return res.json([]);
   try {
-    const response = await fetch(`https://api.mfapi.in/mf/${req.params.schemeCode}`);
-    const data = await response.json();
-    const nav = parseFloat(data?.data?.[0]?.nav);
-    const meta = data?.meta || {};
-    res.json({
-      nav:      isNaN(nav) ? null : nav,
-      date:     data?.data?.[0]?.date || null,
-      fund_house: meta.fund_house || "",
-      scheme_category: meta.scheme_category || "",
-      scheme_type: meta.scheme_type || "",
-    });
+    const results = await stockSearch(q, "IN");
+    const ETF_KW = /etf|bees|fund|gold|nifty|sensex|index|junior|midcap|smallcap|liquid|overnight|banking|silver|copper|nasdaq/i;
+    res.json(results.filter(s => s.type === "ETF" || s.type === "Exchange Traded Fund" || ETF_KW.test(s.name)));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// ── STOCK SEARCH — Twelve Data → Yahoo ───────────────────────────
+app.get("/api/stock/search", auth, async (req, res) => {
+  const { q, market } = req.query;
+  if (!q || q.length < 2) return res.json([]);
+  try {
+    res.json(await stockSearch(q, market || "US"));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── STOCK INFO — Twelve Data → Yahoo (.NS then .BO for Indian) ───
+app.get("/api/stock/info", auth, async (req, res) => {
+  const { ticker, market } = req.query;
+  if (!ticker) return res.status(400).json({ error: "ticker required" });
+  const t = ticker.toUpperCase();
+
+  // Twelve Data
+  if (TWELVE_KEY) {
+    const q = await twelveQuote(market === "IN" ? `${t}:NSE` : t);
+    if (q?.price) return res.json({ found: true, ...q, symbol: t });
+    if (market === "IN") {
+      const q2 = await twelveQuote(`${t}:BSE`);
+      if (q2?.price) return res.json({ found: true, ...q2, symbol: t });
+    }
+  }
+
+  // Yahoo fallback — .NS then .BO for Indian
+  for (const symbol of market === "IN" ? [`${t}.NS`, `${t}.BO`] : [t]) {
+    const meta = await yahooChart(symbol);
+    if (!meta) continue;
+    const price = meta.regularMarketPrice ?? meta.chartPreviousClose;
+    if (!price) continue;
+    return res.json({
+      found: true, name: meta.longName || meta.shortName || "",
+      price, currency: meta.currency || (market === "IN" ? "INR" : "USD"),
+      exchange: meta.exchangeName || "", symbol: meta.symbol || symbol,
+    });
+  }
+  res.json({ found: false });
 });
 
 // ── ANTHROPIC PROXY — all Claude API calls go through here ───────
@@ -420,28 +418,262 @@ app.post("/api/ai/chat", auth, async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
-// Yahoo Finance (server-side to bypass CORS)
+// ══════════════════════════════════════════════════════════════════
+//  DATA SOURCE FALLBACK LAYER
+//  MF:     AMFI master list → MFAPI.in
+//  Stocks: Twelve Data → Yahoo Finance
+//  FX:     exchangerate-api → Yahoo Finance → 83.5
+// ══════════════════════════════════════════════════════════════════
+
+const TWELVE_KEY = process.env.TWELVE_DATA_KEY || "";  // optional — set in Render env
+const FX_FALLBACK = 83.5;
+
+// ── Generic fetch with timeout ────────────────────────────────────
+async function timedFetch(url, opts = {}, ms = 6000) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  try {
+    const r = await fetch(url, { ...opts, signal: ctrl.signal });
+    clearTimeout(timer);
+    return r;
+  } catch (e) {
+    clearTimeout(timer);
+    throw e;
+  }
+}
+
+// ── YAHOO FINANCE helpers (dual-host, rate-limit aware) ───────────
+const YAHOO_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+
+async function yahooFetch(path) {
+  for (const host of ["query1.finance.yahoo.com", "query2.finance.yahoo.com"]) {
+    try {
+      const r = await timedFetch(`https://${host}${path}`, { headers: { "User-Agent": YAHOO_UA, "Accept": "application/json" } });
+      if (!r.ok) continue;
+      const data = await r.json();
+      if (data?.finance?.error?.code === "Too Many Requests") continue;
+      return data;
+    } catch { continue; }
+  }
+  return null;
+}
+
+async function yahooChart(symbol) {
+  const data = await yahooFetch(`/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=5d`);
+  return data?.chart?.result?.[0]?.meta || null;
+}
+
+async function yahooSearch(q, count = 25) {
+  const data = await yahooFetch(`/v1/finance/search?q=${encodeURIComponent(q)}&quotesCount=${count}&newsCount=0&enableFuzzyQuery=true`);
+  return data?.quotes || [];
+}
+
 async function yahooPrice(symbol) {
+  const meta = await yahooChart(symbol);
+  return meta?.regularMarketPrice ?? meta?.chartPreviousClose ?? null;
+}
+
+// ── TWELVE DATA helpers ───────────────────────────────────────────
+// Returns null if no key is configured so callers fall through to Yahoo.
+
+async function twelveSearch(q, exchange = "") {
+  if (!TWELVE_KEY) return null;
   try {
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1d`;
-    const res = await fetch(url, {
-      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" }
-    });
-    const json = await res.json();
-    return json?.chart?.result?.[0]?.meta?.regularMarketPrice ?? null;
+    const url = `https://api.twelvedata.com/symbol_search?symbol=${encodeURIComponent(q)}&outputsize=20${exchange ? "&exchange=" + exchange : ""}`;
+    const r = await timedFetch(url, { headers: { "Authorization": `apikey ${TWELVE_KEY}` } });
+    if (!r.ok) return null;
+    const data = await r.json();
+    if (data.status === "error") return null;
+    return data.data || [];   // [{symbol, instrument_name, exchange, country, type}]
   } catch { return null; }
 }
 
-// AMFI MF NAV (free, no key needed)
+async function twelveQuote(symbol) {
+  if (!TWELVE_KEY) return null;
+  try {
+    const url = `https://api.twelvedata.com/quote?symbol=${encodeURIComponent(symbol)}&apikey=${TWELVE_KEY}`;
+    const r = await timedFetch(url);
+    if (!r.ok) return null;
+    const data = await r.json();
+    if (data.status === "error" || !data.close) return null;
+    return {
+      name:     data.name || symbol,
+      price:    parseFloat(data.close),
+      exchange: data.exchange || "",
+      currency: data.currency || "",
+    };
+  } catch { return null; }
+}
+
+// ── STOCK PRICE: Twelve Data → Yahoo ─────────────────────────────
+async function stockPrice(symbol, marketSuffix = "") {
+  // Twelve Data: symbol without suffix (uses exchange param or symbol directly)
+  const tdSymbol = marketSuffix ? symbol.replace(/\.(NS|BO)$/, "") : symbol;
+  if (TWELVE_KEY) {
+    const q = await twelveQuote(tdSymbol + (marketSuffix ? `:${marketSuffix}` : ""));
+    if (q?.price) return q;
+  }
+  // Yahoo fallback
+  const meta = await yahooChart(symbol);
+  if (!meta) return null;
+  const price = meta.regularMarketPrice ?? meta.chartPreviousClose;
+  if (!price) return null;
+  return { name: meta.longName || meta.shortName || "", price, exchange: meta.exchangeName || "", currency: meta.currency || "" };
+}
+
+// ── STOCK SEARCH: Twelve Data → Yahoo ────────────────────────────
+async function stockSearch(q, market = "US") {
+  // Try Twelve Data
+  if (TWELVE_KEY) {
+    const exchange = market === "IN" ? "NSE,BSE" : "";
+    const results = await twelveSearch(q, exchange);
+    if (results?.length) {
+      return results
+        .filter(s => market === "IN"
+          ? ["NSE","BSE"].includes(s.exchange)
+          : !["NSE","BSE"].includes(s.exchange) && s.country === "United States")
+        .filter(s => ["Common Stock","ETF","Equity"].includes(s.instrument_type || s.type))
+        .slice(0, 12)
+        .map(s => ({
+          ticker:   market === "IN" ? s.symbol : s.symbol,
+          symbol:   s.symbol,
+          name:     s.instrument_name || s.symbol,
+          exchange: s.exchange || "",
+          type:     s.instrument_type || s.type || "EQUITY",
+        }));
+    }
+  }
+  // Yahoo fallback
+  const quotes = await yahooSearch(q);
+  const ETF_KW = /etf|bees|fund|gold|nifty|sensex|index|midcap|smallcap|liquid|overnight|banking|silver|copper|nasdaq/i;
+  return quotes
+    .filter(qt => {
+      if (market === "IN") {
+        const onIN = qt.symbol?.endsWith(".NS") || qt.symbol?.endsWith(".BO") || qt.exchange === "NSI" || qt.exchange === "BSE";
+        return onIN && (qt.quoteType === "EQUITY" || qt.quoteType === "ETF" || ETF_KW.test(qt.longname || ""));
+      }
+      const notIN = !qt.symbol?.endsWith(".NS") && !qt.symbol?.endsWith(".BO") && qt.exchange !== "NSI" && qt.exchange !== "BSE";
+      return notIN && (qt.quoteType === "EQUITY" || qt.quoteType === "ETF");
+    })
+    .slice(0, 12)
+    .map(qt => ({
+      ticker:   market === "IN" ? (qt.symbol?.replace(/\.(NS|BO)$/, "") || qt.symbol) : qt.symbol,
+      symbol:   qt.symbol,
+      name:     qt.longname || qt.shortname || qt.symbol,
+      exchange: qt.exchange || "",
+      type:     qt.quoteType || "EQUITY",
+    }));
+}
+
+// ── MF NAV: AMFI direct → MFAPI fallback ─────────────────────────
+async function fetchMfNav(schemeCode) {
+  // Primary: AMFI NAVAll.txt (authoritative, updated daily)
+  try {
+    const r = await timedFetch("https://www.amfiindia.com/spages/NAVAll.txt", {}, 8000);
+    if (r.ok) {
+      const text = await r.text();
+      // Format: SchemeCode;ISIN1;ISIN2;SchemeName;NAV;Date
+      for (const line of text.split("\n")) {
+        const parts = line.split(";");
+        if (parts[0]?.trim() === String(schemeCode)) {
+          const nav = parseFloat(parts[4]);
+          if (!isNaN(nav)) return { nav, date: parts[5]?.trim() || null, meta: { fund_house: "" }, source: "amfi" };
+        }
+      }
+    }
+  } catch { /* fall through */ }
+
+  // Fallback: MFAPI
+  try {
+    const r = await timedFetch(`https://api.mfapi.in/mf/${schemeCode}`, {}, 5000);
+    if (r.ok) {
+      const data = await r.json();
+      const nav = parseFloat(data?.data?.[0]?.nav);
+      if (!isNaN(nav)) return { nav, date: data?.data?.[0]?.date || null, meta: data?.meta || {}, source: "mfapi" };
+    }
+  } catch { /* fall through */ }
+
+  return null;
+}
+
+// ── MF SEARCH: AMFI master list (primary) → MFAPI (fallback) ─────
+let amfiCache = null;
+let amfiCacheTime = 0;
+
+async function getAmfiList() {
+  if (amfiCache && Date.now() - amfiCacheTime < 6 * 3600_000) return amfiCache;
+  // Primary: AMFI direct scheme list
+  try {
+    const r = await timedFetch("https://www.amfiindia.com/spages/NAVAll.txt", {}, 10000);
+    if (r.ok) {
+      const text = await r.text();
+      const schemes = [];
+      for (const line of text.split("\n")) {
+        const parts = line.split(";");
+        if (parts.length >= 5 && /^\d+$/.test(parts[0]?.trim())) {
+          schemes.push({ scheme_code: parts[0].trim(), name: parts[3]?.trim() || "" });
+        }
+      }
+      if (schemes.length > 100) {
+        amfiCache = schemes;
+        amfiCacheTime = Date.now();
+        console.log(`📋 AMFI list cached from amfiindia.com: ${amfiCache.length} schemes`);
+        return amfiCache;
+      }
+    }
+  } catch { /* fall through */ }
+  // Fallback: MFAPI all-schemes list
+  try {
+    const r = await timedFetch("https://api.mfapi.in/mf", {}, 10000);
+    if (r.ok) {
+      const data = await r.json();
+      amfiCache = (data || []).map(f => ({ scheme_code: String(f.schemeCode), name: f.schemeName }));
+      amfiCacheTime = Date.now();
+      console.log(`📋 AMFI list cached from MFAPI: ${amfiCache.length} schemes`);
+    }
+  } catch { /* keep stale */ }
+  return amfiCache || [];
+}
+
+function scoreMf(name, qLower, qWords) {
+  const n = name.toLowerCase();
+  if (n.startsWith(qLower)) return 100;
+  if (n.includes(qLower)) return 80;
+  const hits = qWords.filter(w => n.includes(w)).length;
+  if (hits === qWords.length) return 60;
+  return hits > 0 ? Math.round(40 * hits / qWords.length) : 0;
+}
+
+// ── FX RATE: exchangerate-api → Yahoo → 83.5 ─────────────────────
+async function fetchUsdInr() {
+  // Primary: exchangerate-api (free tier, 1500 req/month, no key needed for open endpoint)
+  try {
+    const r = await timedFetch("https://open.er-api.com/v6/latest/USD", {}, 5000);
+    if (r.ok) {
+      const data = await r.json();
+      const rate = data?.rates?.INR;
+      if (rate && rate > 50 && rate < 200) return { rate, source: "exchangerate-api" };
+    }
+  } catch { /* fall through */ }
+
+  // Fallback 1: Yahoo Finance
+  try {
+    const rate = await yahooPrice("USDINR=X");
+    if (rate && rate > 50 && rate < 200) return { rate, source: "yahoo" };
+  } catch { /* fall through */ }
+
+  // Fallback 2: hardcoded
+  return { rate: FX_FALLBACK, source: "hardcoded" };
+}
+
+// ── AMFI NAV fallback for prices/refresh ─────────────────────────
 async function mfNav(schemeCode) {
-  try {
-    const res = await fetch(`https://api.mfapi.in/mf/${schemeCode}`);
-    const json = await res.json();
-    const nav = parseFloat(json?.data?.[0]?.nav);
-    return isNaN(nav) ? null : nav;
-  } catch { return null; }
+  const result = await fetchMfNav(schemeCode);
+  return result?.nav ?? null;
 }
 
+
+// ── PRICES REFRESH — Twelve Data → Yahoo (.NS + .BO) + MFAPI + FX ─
 app.post("/api/prices/refresh", auth, async (req, res) => {
   const { data: holdings } = await supabase
     .from("holdings")
@@ -449,28 +681,35 @@ app.post("/api/prices/refresh", auth, async (req, res) => {
 
   if (!holdings?.length) return res.json({ updated: 0 });
 
-  // Fetch USD/INR rate once for all US stocks
-  const usdInr = await yahooPrice("USDINR=X") || 83.2;
+  // FX rate with full fallback chain
+  const { rate: usdInr, source: fxSource } = await fetchUsdInr();
 
   const updates = [];
   for (const h of holdings) {
     let patch = null;
-    if (h.type === "MF" && h.scheme_code) {
-      const nav = await mfNav(h.scheme_code);
-      if (nav) patch = { current_nav: nav, price_fetched_at: new Date().toISOString() };
-    } else if ((h.type === "IN_STOCK" || h.type === "IN_ETF") && h.ticker) {
-      const price = await yahooPrice(`${h.ticker.toUpperCase()}.NS`);
-      if (price) patch = { current_price: price, price_fetched_at: new Date().toISOString() };
-    } else if (h.type === "US_STOCK" && h.ticker) {
-      const price = await yahooPrice(h.ticker.toUpperCase());
-      if (price) patch = { current_price: price, usd_inr_rate: usdInr, price_fetched_at: new Date().toISOString() };
-    }
+    try {
+      if (h.type === "MF" && h.scheme_code) {
+        const nav = await mfNav(h.scheme_code);
+        if (nav) patch = { current_nav: nav, price_fetched_at: new Date().toISOString() };
+
+      } else if ((h.type === "IN_STOCK" || h.type === "IN_ETF") && h.ticker) {
+        // Twelve Data → Yahoo .NS → Yahoo .BO
+        const q = await stockPrice(`${h.ticker.toUpperCase()}.NS`, "NSE");
+        const price = q?.price ?? await yahooPrice(`${h.ticker.toUpperCase()}.BO`);
+        if (price) patch = { current_price: price, price_fetched_at: new Date().toISOString() };
+
+      } else if (h.type === "US_STOCK" && h.ticker) {
+        const q = await stockPrice(h.ticker.toUpperCase());
+        if (q?.price) patch = { current_price: q.price, usd_inr_rate: usdInr, price_fetched_at: new Date().toISOString() };
+      }
+    } catch { /* skip failed holding */ }
+
     if (patch) {
       await supabase.from("holdings").update(patch).eq("id", h.id);
       updates.push({ id: h.id, ...patch });
     }
   }
-  res.json({ updated: updates.length, usdInr, results: updates });
+  res.json({ updated: updates.length, usdInr, fxSource, results: updates });
 });
 
 // ── ARTIFACTS ────────────────────────────────────────────────────
@@ -536,7 +775,7 @@ app.get("*", (_, res) => res.sendFile(path.join(__dirname, "dist", "index.html")
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`✅  WealthLens Pro running on port ${PORT}`);
-  console.log(`📊  Real-time price fetching: Yahoo Finance + MFAPI`);
+  console.log(`📊  Price sources: Twelve Data → Yahoo Finance | MF: MFAPI → AMFI | FX: exchangerate-api → Yahoo → ${FX_FALLBACK}`);
   console.log(`🔐  Google Auth via Supabase`);
   console.log(`💾  Postgres DB + file storage via Supabase`);
 });
