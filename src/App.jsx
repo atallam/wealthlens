@@ -1202,13 +1202,36 @@ ${alertLines||"  None"}`;
 
         {/* Tabs */}
         <div className="tabs">
-          {["overview","holdings","goals","alerts","members","budget","calendar","rebalance","ask"].map(t=>(
-            <div key={t} className={`tab${tab===t?" act":""}`} onClick={()=>setTab(t)}>
-              {t==="alerts"&&trigAlerts.length>0?<span>{t} <span className="tbadge">{trigAlerts.length}</span></span>
-               :t==="ask"?<span style={{display:"flex",alignItems:"center",gap:".35rem"}}>✦ Advisor</span>
-               :t[0].toUpperCase()+t.slice(1)}
-            </div>
-          ))}
+          {["overview","holdings","goals","alerts","members","budget","calendar","rebalance","ask"].map(t=>{
+            const isBudget=t==="budget";
+            const isAsk=t==="ask";
+            const isActive=tab===t;
+            return(
+            <div key={t}
+              className={`tab${isActive?" act":""}`}
+              onClick={()=>setTab(t)}
+              style={isBudget?{
+                borderBottom:isActive?"2px solid #a084ca":undefined,
+                color:isActive?"#a084ca":tab==="budget"?"#a084ca":"rgba(160,132,202,.55)",
+                background:isActive?"rgba(160,132,202,.12)":"rgba(160,132,202,.04)",
+                borderTop:"1px solid rgba(160,132,202,.15)",
+                borderLeft:"1px solid rgba(160,132,202,.1)",
+                borderRight:"1px solid rgba(160,132,202,.1)",
+                borderRadius:"4px 4px 0 0",
+                marginRight:2,
+              }:{}}>
+              {t==="alerts"&&trigAlerts.length>0
+                ?<span>{t} <span className="tbadge">{trigAlerts.length}</span></span>
+                :isAsk?<span style={{display:"flex",alignItems:"center",gap:".35rem"}}>✦ Advisor</span>
+                :isBudget?<span style={{display:"flex",alignItems:"center",gap:".3rem"}}>
+                    <span style={{fontSize:".7rem"}}>💰</span>
+                    <span>Budget</span>
+                    <span style={{fontSize:".55rem",padding:"1px 4px",borderRadius:3,background:"rgba(160,132,202,.25)",color:"rgba(160,132,202,.9)",letterSpacing:".04em"}}>SPEND</span>
+                  </span>
+                :t==="rebalance"?"Rebalance"
+                :t[0].toUpperCase()+t.slice(1)}
+            </div>);
+          })}
         </div>
 
         {/* ── OVERVIEW ── */}
@@ -2250,25 +2273,36 @@ ${alertLines||"  None"}`;
             if(h.type==="FD"&&h.maturity_date){
               addEvent(h.maturity_date,{type:"FD Maturity",label:h.name,color:"#f0a050",icon:"🏦"});
             }
-            // Detect active recurring SIPs
-            // A SIP is "active" if: the holding has ≥3 transactions, the most recent one
-            // is within the last 40 days, and transactions show a consistent monthly pattern.
+            // Detect truly active SIPs with strict checks
             if(h.type==="MF"&&h.transactions?.length>=3){
-              const txns=[...h.transactions].sort((a,b)=>b.txn_date.localeCompare(a.txn_date));
-              const latestDate=new Date(txns[0].txn_date);
-              const daysSinceLast=(now-latestDate)/(864e5);
-              // Only treat as active SIP if last transaction was within 40 days
-              if(daysSinceLast<=40){
-                const sipDay=+txns[0].txn_date.slice(8,10);
-                // Verify consistent monthly pattern (at least 2 of last 3 txns on same day-of-month)
-                const days=txns.slice(0,3).map(t=>+t.txn_date.slice(8,10));
-                const consistent=days.filter(d=>Math.abs(d-sipDay)<=2).length>=2;
-                if(consistent){
-                  const ds=`${calY}-${String(calMo).padStart(2,"0")}-${String(sipDay).padStart(2,"0")}`;
-                  // Only add if this date exists in the calendar month
-                  const daysInCalMo=new Date(calY,calMo,0).getDate();
-                  if(sipDay<=daysInCalMo){
-                    addEvent(ds,{type:"SIP Due",label:h.name.length>24?h.name.slice(0,24)+"…":h.name,color:"#4caf9a",icon:"📈"});
+              const buyTxns=[...h.transactions]
+                .filter(t=>t.txn_type==="BUY")
+                .sort((a,b)=>b.txn_date.localeCompare(a.txn_date));
+              if(buyTxns.length>=3){
+                // Rule 1: last BUY must be in current or previous calendar month only
+                const lastMo=buyTxns[0].txn_date.slice(0,7);
+                const nowMo=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`;
+                const prev=new Date(now.getFullYear(),now.getMonth()-1,1);
+                const prevMo=`${prev.getFullYear()}-${String(prev.getMonth()+1).padStart(2,"0")}`;
+                if(lastMo===nowMo||lastMo===prevMo){
+                  // Rule 2: at least 3 distinct months active in the last 6 months
+                  const cutoff=new Date(now.getFullYear(),now.getMonth()-6,1).toISOString().slice(0,7);
+                  const activeMos=new Set(buyTxns.filter(t=>t.txn_date.slice(0,7)>=cutoff).map(t=>t.txn_date.slice(0,7)));
+                  if(activeMos.size>=3){
+                    // Rule 3: find the most common day-of-month
+                    const freq={};
+                    buyTxns.slice(0,6).forEach(t=>{const d=+t.txn_date.slice(8,10);freq[d]=(freq[d]||0)+1;});
+                    const sipDay=+Object.entries(freq).sort((a,b)=>b[1]-a[1])[0][0];
+                    // Rule 4: only show on current or future months (not past months in calendar)
+                    const viewedMo=`${calY}-${String(calMo).padStart(2,"0")}`;
+                    if(viewedMo>=nowMo){
+                      const daysInCalMo=new Date(calY,calMo,0).getDate();
+                      const day=Math.min(sipDay,daysInCalMo);
+                      const ds=`${calY}-${String(calMo).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
+                      const avgAmt=buyTxns.slice(0,3).reduce((s,t)=>s+(+t.units)*(+t.price),0)/3;
+                      const lbl=`${h.name.length>22?h.name.slice(0,22)+"...":h.name} (₹${Math.round(avgAmt/1000)}K)`;
+                      addEvent(ds,{type:"SIP Due",label:lbl,color:"#4caf9a",icon:"📈"});
+                    }
                   }
                 }
               }
